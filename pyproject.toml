@@ -1,0 +1,70 @@
+[build-system]
+requires = [
+    "setuptools>=69",
+    "wheel>=0.43",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytorch-module-monitor"
+version = "0.1.0"
+description = "Deep-Dive Diagnostics for PyTorch models"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Your Name", email = "you@example.com" },
+]
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.1",
+    "torchmetrics>1.5"
+]
+
+[project.optional-dependencies]
+wandb = [
+    "wandb>=0.16",
+]
+tb = [
+    "tensorboard>=2.15",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-xdist>=3.6",
+    "pre-commit>=3.7",
+    "black>=24.3",
+    "flake8>=7.0",
+    "mypy>=1.10",
+    "sphinx>=7.2",
+    "sphinx-autoapi>=3.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/pytorch-module-monitor"
+Source = "https://github.com/yourname/pytorch-module-monitor"
+Issues = "https://github.com/yourname/pytorch-module-monitor/issues"
+Documentation = "https://pytorch-module-monitor.readthedocs.io"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pytorch_module_monitor = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.flake8]
+max-line-length = 120
+exclude = [".git", "__pycache__", "build", "dist"]
+
+[tool.mypy]
+python_version = "3.9"
+check_untyped_defs = true
+plugins = []

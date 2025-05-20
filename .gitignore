@@ -1,5 +1,5 @@
 examples/data/
-wandb/*
+examples/wandb/
 logs/
 results/
 figures/
