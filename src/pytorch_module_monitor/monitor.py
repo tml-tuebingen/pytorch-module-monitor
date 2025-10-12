@@ -501,22 +501,24 @@ class ModuleMonitor:
                 self.logger.warning(f"Step {self.step}: Found a parameter where the gradient is None: %s", name)
                 continue
 
-            # log the different metrics (most likely the frobenius norm of the gradients)
-            for metric_name, metric_fn in self.gradient_metrics.items():
-                # we apply the metrics to the flattened gradient tensor
-                result = metric_fn(param.grad.detach().flatten())
+            # gradient metrics
+            for metric_name, (compiled_re, metric_fn) in self.gradient_metrics.items():
+                if compiled_re.match(name):
 
-                # if result is a tensor, apply item()
-                if isinstance(result, torch.Tensor):
-                    result = result.item()
+                    # we apply the metrics to the flattened gradient tensor
+                    result = metric_fn(param.grad.detach().flatten())
 
-                # Create log entry
-                log_entry = f"gradient/{self._format_module_name(name)}/{metric_name}"
-                if before_clip:
-                    log_entry = log_entry.replace("gradient/", "gradient_before_clip/", 1)
+                    # if result is a tensor, apply item()
+                    if isinstance(result, torch.Tensor):
+                        result = result.item()
 
-                self.log_scalar(log_entry, result)
-                self.logger.debug(f"Step {self.step}: Monitored gradient of parameter %s with shape %s with %s %s (logged as %s)", name, param.grad.shape, metric_name, result, log_entry)
+                    # Create log entry
+                    log_entry = f"gradient/{self._format_module_name(name)}/{metric_name}"
+                    if before_clip:
+                        log_entry = log_entry.replace("gradient/", "gradient_before_clip/", 1)
+                    self.log_scalar(log_entry, result)
+            
+            self.logger.debug(f"Step {self.step}: Monitored gradient of parameter %s with shape %s with %s %s (logged as %s)", name, param.grad.shape, metric_name, result, log_entry)
 
 
     #################################################################
@@ -565,31 +567,24 @@ class ModuleMonitor:
         
         # collect the parameters of the reference module
         reference_module_parameters = {}
-        if self.reference_module is not None and len(self.parameter_difference_metrics_spec) > 0:
+        if self.reference_module is not None and len(self.parameter_difference_metrics) > 0:
             for name, param in self.reference_module.named_parameters():
                 reference_module_parameters[name] = param
         
         for name, param in self.module.named_parameters():
-            # log metrics that apply to all parameters
-            for metric_name, metric_fn in self.parameter_metrics.items():
-                self._monitor_parameter(name, param, metric_fn, metric_name)
-                
-            # log metrics that specify via a regular expression that they only apply to specific named parameters
-            for compiled_re, metrics_dict in self.parameter_metrics_spec.items():
+            # parameter metrics
+            for metric_name, (compiled_re, metric_fn) in self.parameter_metrics.items():
                 if compiled_re.match(name):
-                    for metric_name, metric_fn in metrics_dict.items():
-                        self._monitor_parameter(name, param, metric_fn, metric_name) # we put this in a try-catch block because it executes 
+                    self._monitor_parameter(name, param, metric_fn, metric_name)
 
-            # log metrics for the difference between the parameter and its reference
+            # parameter difference metrics
             if self.reference_module is not None:
                 if name in reference_module_parameters:
                     ref_param = reference_module_parameters[name]
                         
-                    # log metrics that specify via a regular expression that they only apply to specific named parameters
-                    for compiled_re, metrics_dict in self.parameter_difference_metrics_spec.items():
+                    for metric_name, (compiled_re, metric_fn) in self.parameter_difference_metrics.items():
                         if compiled_re.match(name):
-                            for metric_name, metric_fn in metrics_dict.items():
-                                self._monitor_parameter_difference(name, param, ref_param, metric_fn, metric_name)
+                            self._monitor_parameter_difference(name, param, ref_param, metric_fn, metric_name)
                 else:
                     self.logger.warning(f"Step {self.step}: Parameter %s not found in the reference module.", name)
 
