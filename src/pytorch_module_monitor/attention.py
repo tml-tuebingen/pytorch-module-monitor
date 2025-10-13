@@ -7,9 +7,10 @@ import functools
 from typing import Callable, Any, Union
 import torch
 import math
+from .monitor import ModuleMonitor
 
 def monitor_scaled_dot_product_attention(
-    monitor,  # The ModuleMonitor instance
+    monitor: ModuleMonitor, 
     module: Union[str, torch.nn.Module],
     query: torch.Tensor,
     key: torch.Tensor,

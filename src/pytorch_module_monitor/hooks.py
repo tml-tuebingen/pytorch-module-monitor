@@ -26,7 +26,7 @@ class HooksManager:
         handle = module.register_forward_hook(hook_fn)
         self.hooks[module] = handle
     
-    def remove(self, module: nn.Module) -> None:
+    def remove_hook(self, module: nn.Module) -> None:
         """Remove the hook from the specified module.
         
         Args:
@@ -36,7 +36,7 @@ class HooksManager:
             self.hooks[module].remove()
             del self.hooks[module]
     
-    def remove_all(self) -> None:
+    def remove_all_hooks(self) -> None:
         """Remove all registered hooks."""
         for handle in self.hooks.values():
             handle.remove()
@@ -48,7 +48,7 @@ class HooksManager:
     
     def __del__(self):
         """Cleanup: remove all hooks when object is destroyed."""
-        self.remove_all()
+        self.remove_all_hooks()
     
     def __enter__(self):
         """Context manager support."""
@@ -56,4 +56,4 @@ class HooksManager:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager cleanup."""
-        self.remove_all()
+        self.remove_all_hooks()

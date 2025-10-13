@@ -9,8 +9,8 @@ import sys
 from contextlib import contextmanager
 import re
 
-from hooks import HooksManager
-from storage import StorageManager    
+from .hooks import HooksManager
+from .storage import StorageManager    
 
 
 ############################################################################################
@@ -46,7 +46,7 @@ class MonitorMixin:
 #################################################################
 # The ModuleMonitor class
 #################################################################
-def format_module_name(name: str):
+def default_format_module_name_fn(name: str):
     if name == "" or name == "_orig_mod" or name == "_forward_module" or name == "_fsdp_wrapped_module":
         return "[root module]"
     for s in ["_forward_module.", "_orig_mod.", "_fsdp_wrapped_module."]:
@@ -80,8 +80,9 @@ class ModuleMonitor:
     def __init__(self, 
                  start_step = 0,
                  monitor_interval = 20,
-                 format_module_name_fn: Callable[[str], str] = format_module_name,
+                 format_module_name_fn: Callable[[str], str] = default_format_module_name_fn,
                  logger=None,
+                 monitor=True, # global toggle to turn off monitoring
                  cpu_offload=False): 
         """Init the training monitor."""
         self.format_module_name_fn = format_module_name_fn
@@ -95,9 +96,10 @@ class ModuleMonitor:
         self.reference_module_names = {}        # a mapping from modules to their names
         self.reference_module_activations = {}  # a mapping from module names to their activations
 
+        self.current_step = start_step
         self.monitor_interval = monitor_interval
-        self.step = start_step
-        self.monitor = True
+        
+        self.monitor = monitor      
         self.monitor_step = False # do we monitor the current gradient step?
 
         # the metrics that we monitor, stored as name -> [regex, metric_fn]
@@ -108,9 +110,9 @@ class ModuleMonitor:
         self.gradient_metrics = {}
 
         # hook managers for the different hooks that we need for monitoring
-        self.activation_hooks = None
-        self.activation_difference_hooks = None 
-        self.reference_module_hooks = None
+        self.activation_hooks = HooksManager()
+        self.activation_difference_hooks = HooksManager()
+        self.reference_module_hooks = HooksManager()
 
         # Initialize the logger
         if logger is None:
@@ -124,12 +126,9 @@ class ModuleMonitor:
 
 
     #################################################################
-    # Specify what to monitor (builder patter, before we call set_module)
+    # Add metrics to monitor
     #################################################################
     def add_activation_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
-        if self.module is not None:
-            raise ValueError("Cannot add metrics after the module has been set.")
-
         if metric_name in self.activation_metrics:
             raise ValueError(f"Activation metric {metric_name} already exists.")
         
@@ -137,9 +136,6 @@ class ModuleMonitor:
         self.activation_metrics[metric_name] = (compiled_re, metric_fn)
 
     def add_activation_difference_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
-        if self.module is not None:
-            raise ValueError("Cannot add metrics after the module has been set.")
-
         if metric_name in self.activation_difference_metrics:
             raise ValueError(f"Activation difference metric {metric_name} already exists.")
 
@@ -147,9 +143,6 @@ class ModuleMonitor:
         self.activation_difference_metrics[metric_name] = (compiled_re, metric_fn)
 
     def add_parameter_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
-        if self.module is not None:
-            raise ValueError("Cannot add metrics after the module has been set.")
-
         if metric_name in self.parameter_metrics:
             raise ValueError(f"Parameter metric {metric_name} already exists.")
 
@@ -157,9 +150,6 @@ class ModuleMonitor:
         self.parameter_metrics[metric_name] = (compiled_re, metric_fn)
 
     def add_parameter_difference_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
-        if self.module is not None:
-            raise ValueError("Cannot add metrics after the module has been set.")
-
         if metric_name in self.parameter_difference_metrics:
             raise ValueError(f"Parameter difference metric {metric_name} already exists.")
 
@@ -167,9 +157,6 @@ class ModuleMonitor:
         self.parameter_difference_metrics[metric_name] = (compiled_re, metric_fn)
 
     def add_gradient_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
-        if self.module is not None:
-            raise ValueError("Cannot add metrics after the module has been set.")
-
         if metric_name in self.gradient_metrics:
             raise ValueError(f"Gradient metric {metric_name} already exists.")
 
@@ -181,68 +168,81 @@ class ModuleMonitor:
     # Set the module
     #################################################################
     def set_module(self, module):
-        """Set the module that we want to monitor. 
+        """Set the module that should be monitored.
 
-        This function will register hooks on the module to implement the monitoring.
+        We register hooks on the module to implement the monitoring.
         """
-        if self.module is not None:
+        if module is None:
+            raise ValueError("Module cannot be None.")
+
+        if self.module is not None: # for simplicity, we do not support changing the module after it has been set
             raise ValueError("Module has already been set!")
         
-        #if not self.monitor:
-        #    self.logger.debug(f"Step {self.step}: Monitoring is disabled. Not setting module.")
-        #    return
+        if not self.monitor:
+            self.logger.debug(f"Step {self.current_step}: Monitoring is disabled. Not setting the module.")
+            return
         
+        # set the module
         self.module = module
-        self.activation_hooks = HooksManager()
-        
+
         for name, m in module.named_modules():
             # generate the name -> module mapping
             self.module_names[m] = self.format_module_name_fn(name)
 
             # register forward hooks for activation monitoring
-            hook = self._get_activation_forwad_hook(self.module_names[m])
+            hook = self._get_activation_forwad_hook(self.module_names[m]) 
             self.activation_hooks.register_forward_hook(m, hook)
-            self.logger.debug(f"Step {self.step}: Registered forward hook for module %s", name)
+            self.logger.debug(f"Step {self.current_step}: Registered forward hook for module %s", name)
 
             # if the module implements the MonitorMixin interface, set the training monitor
             if isinstance(m, MonitorMixin):
                 m.set_training_monitor(self, False)
 
 
-            # if the module implements the MonitoredModule interface, remove the training monitor
-            #for _, m in module.named_modules():
-            #    if isinstance(m, MonitorMixin):
-            #        m.set_training_monitor(None, False)
-
     #################################################################
     # Add a reference module
     #################################################################
     def set_reference_module(self, module):
-        """Set the reference module. The training monitor compares the activations and parameters of the monitored module with the reference module. 
-        The reference module must take a forward pass with the same input as the monitored module BEFORE the monitored module takes a forward pass."""
+        """Set the reference module. 
+        
+        The training monitor compares the activations and parameters of the monitored module with the reference module. 
+        """
         if not self.monitor:
-            self.logger.debug(f"Step {self.step}: Monitoring is disabled. Not setting reference module.")
+            self.logger.debug(f"Step {self.current_step}: Monitoring is disabled. Not setting reference module.")
             return
         
+        if self.module is None:
+            raise ValueError("Please set the monitored module before setting the reference module.")
+
         # remove any previous reference module
         self.remove_reference_module()
 
         self.reference_module = module
+        self.reference_module_hooks = HooksManager()
         if module is None:
             return
-        
+
         # setup for the new reference module
-        # register the modules via their names and set forward hooks
         for name, m in module.named_modules():
-            self.reference_module_names[m] = self._format_module_name(name)
-            self.reference_module_hooks[m] = m.register_forward_hook(self._get_reference_activation_forwad_hook())
+            # generate the name -> module mapping
+            self.reference_module_names[m] = self.format_module_name_fn(name)
+
+            # register forward hooks for activation monitoring
+            hook = self._get_reference_activation_forwad_hook()
+            self.reference_module_hooks.register_forward_hook(m, hook)
+            self.logger.debug(f"Step {self.current_step}: Registered forward hook for reference module %s", name)
 
             # if the module implements the MonitoredModule interface, set the training monitor
             if isinstance(m, MonitorMixin):
                 m.set_training_monitor(self, True)
 
-        # assert that the reference module names contains the same keys as the monitored module names
-        assert set(self.module_names.values()) == set(self.reference_module_names.values()), "The reference module must have the same structure as the monitored module (there are modules with different names)."
+        # check that the reference module names contains the same keys as the monitored module names
+        if set(self.module_names.values()) != set(self.reference_module_names.values()):
+            raise ValueError("The reference module must have the same structure as the monitored module (there are modules with different names).")
+
+
+    def has_reference_module(self): 
+        return self.reference_module is not None
 
 
     def remove_reference_module(self):
@@ -255,40 +255,35 @@ class ModuleMonitor:
                 m.set_training_monitor(None, False)
         # remove the reference module
         self.reference_module = None
-        for hook in self.reference_module_hooks.values():
-            hook.remove()
-        self.reference_module_hooks = {}
+        self.reference_module_hooks.remove_all_hooks()
         self.reference_module_names = {}
         self.reference_module_activations = {}
-
-
-    def has_reference_module(self): 
-        return self.reference_module is not None
-
-
 
 
     #################################################################
     # Start step, get metrics, etc.
     # 
-    # This is the interface used in the training loop
+    # This is the basic interface used in the training loop
     #################################################################
-    def start_step(self, step: int):
+    def begin_step(self, step: int):
         """Notify the monitor that a new step has started. This function should be called before the forward pass. Returns True if the step should be monitored, False otherwise."""
+        if step < self.current_step:
+            raise ValueError(f"Step {step} cannot be smaller than the current step {self.current_step}.")
+        
         # clean-up any previous step (if not done already)
         self.reference_module_activations = {}        
 
         # do we monitor this step?
         self.monitor_step = self.is_step_monitored(step)
-        self.step = step
+        self.current_step = step
 
         # check that there is a module to monitor
         if self.monitor_step and self.module is None:
             raise ValueError("No module to monitor. Please set the module first.")
 
-        # if we monitor this step, create a new entry in the log dict
+        # if we monitor this step, create a new log entry
         if self.monitor_step: 
-            self.log_dict[step] = {}
+            self.storage.create_step_entry(self.current_step)
             
         return self.monitor_step
 
@@ -326,25 +321,28 @@ class ModuleMonitor:
     def after_micro_batch(self):
         """To be called after a mini-batch is done. Cleanup of intermediate state."""
         self.reference_module_activations = {}
-    
 
-    def after_step(self):
+
+    def end_step(self):
         """This function is called after all mini-batches of a gradient step are done. It aggregates the batch statistics. """
+        # we don't require the user to call after_micro_batch if there is only a single micro batch
+        self.reference_module_activations = {}
+
         if self.is_monitoring():
-            self.storage.aggregate_step()
+            self.storage.aggregate_step(self.current_step)
     
 
-    def get_step_metrics(self):
-        """Return the log dict of the current step"""
+    def get_current_metrics(self):
+        """Return the metrics logged during the current step"""
         if self.monitor_step:
-            return self.log_dict[self.step]
+            return self.storage.get_step_metrics(self.current_step)
         return {}
     
 
     def get_all_metrics(self):
         """Return the full log dict with all steps that have been logged so far."""
         return self.log_dict
-    
+
 
     #################################################################
     # Low-level logging functions
@@ -359,19 +357,19 @@ class ModuleMonitor:
         if not self.is_monitoring() and not force:
             return
         
-        self.storage.log_scalar(self.step, key, value)
+        self.storage.log_scalar(self.current_step, key, value)
 
     def log_scalars(self, monitor_dict: dict, force=False):
         """Monitor a dictionary of scalar values."""
         for key, value in monitor_dict.items():
-            self.storage.log_scalar(self.step, key, value, force=force)
+            self.storage.log_scalar(self.current_step, key, value, force=force)
 
     def log_tensor(self, key: str, tensor: torch.Tensor):
         """Monitor a torch.Tensor."""
         if not self.is_monitoring():
             return
         
-        self.storage.log_tensor(self.step, key, tensor)
+        self.storage.log_tensor(self.current_step, key, tensor)
 
 
     #################################################################
@@ -386,7 +384,7 @@ class ModuleMonitor:
             result = metric_fn(activations)
             log_entry = f"activation/{module_name}/{metric_name}"
             self.log_tensor(log_entry, result)
-            self.logger.debug(f"Step {self.step}: Monitored {metric_name} of activations of module {module_name}, logged as {log_entry} (activation shape {activations.shape}, result shape {result.shape}).")
+            self.logger.debug(f"Step {self.current_step}: Monitored {metric_name} of activations of module {module_name}, logged as {log_entry} (activation shape {activations.shape}, result shape {result.shape}).")
 
         except Exception as e:
             raise RuntimeError(f"Failed to monitor metric {metric_name} for the activations of module {module_name} (activation shape {activations.shape}).") from e
@@ -402,7 +400,7 @@ class ModuleMonitor:
             result = metric_fn(activations, ref_activations)
             log_entry = f"activation_difference/{module_name}/{metric_name}"
             self.log_tensor(log_entry, result)
-            self.logger.debug(f"Step {self.step}: Monitored {metric_name} of activations of module {module_name}, logged as {log_entry} (activation shape {activations.shape}, result shape {result.shape}).")
+            self.logger.debug(f"Step {self.current_step}: Monitored {metric_name} of activations of module {module_name}, logged as {log_entry} (activation shape {activations.shape}, result shape {result.shape}).")
 
         except Exception as e:
             raise RuntimeError(f"Failed to monitor metric {metric_name} for the activation differences of module {module_name} (activation shape {activations.shape}).") from e
@@ -435,11 +433,11 @@ class ModuleMonitor:
 
             # raise a warning if no reference module is set
             if not self.has_reference_module():
-                self.logger.warning(f"Step {self.step}: Attempted to monitor activations of the reference module, but no reference module is set (for module %s).", module_name)
+                self.logger.warning(f"Step {self.current_step}: Attempted to monitor activations of the reference module, but no reference module is set (for module %s).", module_name)
                 return
             # raise a warning if the reference module has already stored activations for this module
             if module_name in self.reference_module_activations:
-                self.logger.warning(f"Step {self.step}: Attempted to monitor activations of the reference module for module %s, but activations are already stored.", module_name)
+                self.logger.warning(f"Step {self.current_step}: Attempted to monitor activations of the reference module for module %s, but activations are already stored.", module_name)
                 return
             # optionally, offoad the activations to the CPU. this is extremely expensive but can save GPU memory.
             if self.cpu_offload:
@@ -472,9 +470,9 @@ class ModuleMonitor:
                                                                        activations,
                                                                        ref_activations)
                     else:
-                        self.logger.warning(f"Step {self.step}: No reference module activations found for module %s", module_name)
+                        self.logger.warning(f"Step {self.current_step}: No reference module activations found for module %s", module_name)
 
-        self.logger.debug(f"Step {self.step}: Monitored activations of module %s with shape %s", module_name, activations.shape)
+        self.logger.debug(f"Step {self.current_step}: Monitored activations of module %s with shape %s", module_name, activations.shape)
 
 
     def _get_activation_forwad_hook(self, module_name : str):
@@ -498,27 +496,26 @@ class ModuleMonitor:
         
         for name, param in self.module.named_parameters():
             if param.grad is None:
-                self.logger.warning(f"Step {self.step}: Found a parameter where the gradient is None: %s", name)
+                self.logger.warning(f"Step {self.current_step}: Found a parameter where the gradient is None: %s", name)
                 continue
 
             # gradient metrics
             for metric_name, (compiled_re, metric_fn) in self.gradient_metrics.items():
                 if compiled_re.match(name):
 
-                    # we apply the metrics to the flattened gradient tensor
-                    result = metric_fn(param.grad.detach().flatten())
+                    result = metric_fn(param.grad.detach())
 
                     # if result is a tensor, apply item()
                     if isinstance(result, torch.Tensor):
                         result = result.item()
 
                     # Create log entry
-                    log_entry = f"gradient/{self._format_module_name(name)}/{metric_name}"
+                    log_entry = f"gradient/{self.format_module_name_fn(name)}/{metric_name}"
                     if before_clip:
                         log_entry = log_entry.replace("gradient/", "gradient_before_clip/", 1)
                     self.log_scalar(log_entry, result)
             
-            self.logger.debug(f"Step {self.step}: Monitored gradient of parameter %s with shape %s with %s %s (logged as %s)", name, param.grad.shape, metric_name, result, log_entry)
+            self.logger.debug(f"Step {self.current_step}: Monitored gradient of parameter %s with shape %s with %s %s (logged as %s)", name, param.grad.shape, metric_name, result, log_entry)
 
 
     #################################################################
@@ -534,9 +531,9 @@ class ModuleMonitor:
                 result = result.item()
 
             # Create log entry
-            log_entry = f"parameter/{self._format_module_name(name)}/{metric_name}"
+            log_entry = f"parameter/{self.format_module_name_fn(name)}/{metric_name}"
             self.log_scalar(log_entry, result)
-            self.logger.debug(f"Step {self.step}: Monitored parameter %s with shape %s with %s %s (logged as %s)", name, param.shape, metric_name, result, log_entry)
+            self.logger.debug(f"Step {self.current_step}: Monitored parameter %s with shape %s with %s %s (logged as %s)", name, param.shape, metric_name, result, log_entry)
 
         except Exception as e:
             raise RuntimeError(f"Failed to monitor parameter {name} of shape {param.shape} with metric {metric_name}.") from e
@@ -552,9 +549,9 @@ class ModuleMonitor:
                 result = result.item()
 
             # Create log entry
-            log_entry = f"parameter_difference/{self._format_module_name(name)}/{metric_name}"
+            log_entry = f"parameter_difference/{self.format_module_name_fn(name)}/{metric_name}"
             self.log_scalar(log_entry, result)
-            self.logger.debug(f"Step {self.step}: Monitored parameter difference %s with shape %s with %s %s (logged as %s)", name, param.shape, metric_name, result, log_entry)
+            self.logger.debug(f"Step {self.current_step}: Monitored parameter difference %s with shape %s with %s %s (logged as %s)", name, param.shape, metric_name, result, log_entry)
 
         except Exception as e:
             raise RuntimeError(f"Failed to monitor parameter difference {name} of shape {param.shape} with metric {metric_name}.") from e
@@ -586,15 +583,12 @@ class ModuleMonitor:
                         if compiled_re.match(name):
                             self._monitor_parameter_difference(name, param, ref_param, metric_fn, metric_name)
                 else:
-                    self.logger.warning(f"Step {self.step}: Parameter %s not found in the reference module.", name)
+                    self.logger.warning(f"Step {self.current_step}: Parameter %s not found in the reference module.", name)
 
 
     #################################################################
     # Internal helper functions
     #################################################################
-    def _format_module_name(self, name: str):
-        return self.format_module_name_fn(name)
-
     def _get_module_name(self, module :Union[str, torch.nn.Module], is_reference :bool) -> str:
         """Look up the name of a torch.nn.Module in the appropriate dict."""
         module_name = module
@@ -605,7 +599,7 @@ class ModuleMonitor:
             module_name = self.reference_module_names[module]
         else:
             if not module in self.module_names:
-                self.logger.warning(f"Step {self.step}: Module %s not found in the module names dict.", module)
+                self.logger.warning(f"Step {self.current_step}: Module %s not found in the module names dict.", module)
                 return "[unknown module]"
             module_name = self.module_names[module]
         assert isinstance(module_name, str)
