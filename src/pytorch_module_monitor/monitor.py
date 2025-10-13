@@ -102,7 +102,7 @@ class ModuleMonitor:
         self.monitor = monitor      
         self.monitor_step = False # do we monitor the current gradient step?
 
-        # the metrics that we monitor, stored as name -> [regex, metric_fn]
+        # the metrics that we monitor, stored as name -> [regex, metric_fn, metric_aggregation_fn]
         self.activation_metrics = {}
         self.activation_difference_metrics = {}
         self.parameter_metrics = {}
@@ -128,40 +128,40 @@ class ModuleMonitor:
     #################################################################
     # Add metrics to monitor
     #################################################################
-    def add_activation_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
+    def add_activation_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*", metric_aggregation_fn: Optional[Callable] = None):
         if metric_name in self.activation_metrics:
             raise ValueError(f"Activation metric {metric_name} already exists.")
         
         compiled_re = re.compile(metric_regex)
-        self.activation_metrics[metric_name] = (compiled_re, metric_fn)
+        self.activation_metrics[metric_name] = (compiled_re, metric_fn, metric_aggregation_fn)
 
-    def add_activation_difference_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
+    def add_activation_difference_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*", metric_aggregation_fn: Optional[Callable] = None):
         if metric_name in self.activation_difference_metrics:
             raise ValueError(f"Activation difference metric {metric_name} already exists.")
 
         compiled_re = re.compile(metric_regex)
-        self.activation_difference_metrics[metric_name] = (compiled_re, metric_fn)
+        self.activation_difference_metrics[metric_name] = (compiled_re, metric_fn, metric_aggregation_fn)
 
     def add_parameter_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
         if metric_name in self.parameter_metrics:
             raise ValueError(f"Parameter metric {metric_name} already exists.")
 
         compiled_re = re.compile(metric_regex)
-        self.parameter_metrics[metric_name] = (compiled_re, metric_fn)
+        self.parameter_metrics[metric_name] = (compiled_re, metric_fn, None)
 
     def add_parameter_difference_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
         if metric_name in self.parameter_difference_metrics:
             raise ValueError(f"Parameter difference metric {metric_name} already exists.")
 
         compiled_re = re.compile(metric_regex)
-        self.parameter_difference_metrics[metric_name] = (compiled_re, metric_fn)
+        self.parameter_difference_metrics[metric_name] = (compiled_re, metric_fn, None)
 
     def add_gradient_metric(self, metric_name: str, metric_fn: callable, metric_regex: str = ".*"):
         if metric_name in self.gradient_metrics:
             raise ValueError(f"Gradient metric {metric_name} already exists.")
 
         compiled_re = re.compile(metric_regex)
-        self.gradient_metrics[metric_name] = (compiled_re, metric_fn)
+        self.gradient_metrics[metric_name] = (compiled_re, metric_fn, None)
 
 
     #################################################################
@@ -347,8 +347,8 @@ class ModuleMonitor:
     #################################################################
     # Low-level logging functions
     #################################################################
-    
-    def log_scalar(self, key: str, value: Union[Number, torch.Tensor], force=False):
+
+    def log_scalar(self, key: str, value: Union[Number, torch.Tensor], aggregation_fn: Optional[Callable] = None, force=False):
         """Monitor a scalar value such as the loss or the learning rate.
         
         If force is set to True, the value is logged even if we are not monitoring the current step.
@@ -356,20 +356,20 @@ class ModuleMonitor:
         """
         if not self.is_monitoring() and not force:
             return
-        
-        self.storage.log_scalar(self.current_step, key, value)
+
+        self.storage.log_scalar(self.current_step, key, value, aggregation_fn=aggregation_fn)
 
     def log_scalars(self, monitor_dict: dict, force=False):
         """Monitor a dictionary of scalar values."""
         for key, value in monitor_dict.items():
             self.storage.log_scalar(self.current_step, key, value, force=force)
 
-    def log_tensor(self, key: str, tensor: torch.Tensor):
+    def log_tensor(self, key: str, tensor: torch.Tensor, aggregation_fn: Optional[Callable] = None):
         """Monitor a torch.Tensor."""
         if not self.is_monitoring():
             return
-        
-        self.storage.log_tensor(self.current_step, key, tensor)
+
+        self.storage.log_tensor(self.current_step, key, tensor, aggregation_fn=aggregation_fn)
 
 
     #################################################################
@@ -379,11 +379,12 @@ class ModuleMonitor:
                                    module_name :str, 
                                    metric_name :str, 
                                    metric_fn :Callable,
+                                   metric_aggregation_fn :Optional[Callable],
                                    activations :torch.Tensor):
         try:
             result = metric_fn(activations)
             log_entry = f"activation/{module_name}/{metric_name}"
-            self.log_tensor(log_entry, result)
+            self.log_tensor(log_entry, result, metric_aggregation_fn)
             self.logger.debug(f"Step {self.current_step}: Monitored {metric_name} of activations of module {module_name}, logged as {log_entry} (activation shape {activations.shape}, result shape {result.shape}).")
 
         except Exception as e:
@@ -394,12 +395,13 @@ class ModuleMonitor:
                                               module_name :str,
                                               metric_name :str,
                                               metric_fn :Callable,
+                                              metric_aggregation_fn :Optional[Callable],
                                               activations :torch.Tensor,
                                               ref_activations :torch.Tensor):
         try:
             result = metric_fn(activations, ref_activations)
             log_entry = f"activation_difference/{module_name}/{metric_name}"
-            self.log_tensor(log_entry, result)
+            self.log_tensor(log_entry, result, metric_aggregation_fn)
             self.logger.debug(f"Step {self.current_step}: Monitored {metric_name} of activations of module {module_name}, logged as {log_entry} (activation shape {activations.shape}, result shape {result.shape}).")
 
         except Exception as e:
@@ -448,16 +450,17 @@ class ModuleMonitor:
             return
 
         # activation metrics
-        for metric_name, (compiled_re, metric_fn) in self.activation_metrics.items():
+        for metric_name, (compiled_re, metric_fn, metric_aggregation_fn) in self.activation_metrics.items():
             if compiled_re.match(module_name):
                 self._monitor_activation_metric(module_name,
                                                 metric_name,
                                                 metric_fn,
+                                                metric_aggregation_fn,
                                                 activations)
 
         # activation difference metrics
         if self.has_reference_module():
-            for metric_name, (compiled_re, metric_fn) in self.activation_difference_metrics.items():
+            for metric_name, (compiled_re, metric_fn, metric_aggregation_fn) in self.activation_difference_metrics.items():
                 if compiled_re.match(module_name):
                     if module_name in self.reference_module_activations:
                         ref_activations = self.reference_module_activations[module_name]
@@ -467,6 +470,7 @@ class ModuleMonitor:
                             self._monitor_activation_difference_metric(module_name,
                                                                        metric_name,
                                                                        metric_fn,
+                                                                       metric_aggregation_fn,
                                                                        activations,
                                                                        ref_activations)
                     else:
@@ -500,7 +504,7 @@ class ModuleMonitor:
                 continue
 
             # gradient metrics
-            for metric_name, (compiled_re, metric_fn) in self.gradient_metrics.items():
+            for metric_name, (compiled_re, metric_fn, metric_aggregation_fn) in self.gradient_metrics.items():
                 if compiled_re.match(name):
 
                     result = metric_fn(param.grad.detach())
@@ -570,7 +574,7 @@ class ModuleMonitor:
         
         for name, param in self.module.named_parameters():
             # parameter metrics
-            for metric_name, (compiled_re, metric_fn) in self.parameter_metrics.items():
+            for metric_name, (compiled_re, metric_fn, metric_aggregation_fn) in self.parameter_metrics.items():
                 if compiled_re.match(name):
                     self._monitor_parameter(name, param, metric_fn, metric_name)
 
@@ -579,7 +583,7 @@ class ModuleMonitor:
                 if name in reference_module_parameters:
                     ref_param = reference_module_parameters[name]
                         
-                    for metric_name, (compiled_re, metric_fn) in self.parameter_difference_metrics.items():
+                    for metric_name, (compiled_re, metric_fn, metric_aggregation_fn) in self.parameter_difference_metrics.items():
                         if compiled_re.match(name):
                             self._monitor_parameter_difference(name, param, ref_param, metric_fn, metric_name)
                 else:

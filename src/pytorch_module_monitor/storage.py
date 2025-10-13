@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import sys
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Callable
 from numbers import Number
 
 
@@ -17,6 +17,7 @@ class StorageManager:
     
     def __init__(self, logger=None):
         self.log_dict = {}
+        self.aggregation_fns = {}
         self.logger = logger
         
     def create_step_entry(self, step: int):
@@ -45,7 +46,7 @@ class StorageManager:
         """Clear the log dict."""
         self.log_dict = {}
         
-    def log_scalar(self, step: int, key: str, value: Union[Number, torch.Tensor]):
+    def log_scalar(self, step: int, key: str, value: Union[Number, torch.Tensor], aggregation_fn: Callable | None = None):
         """Log a scalar value.
         
         If the same key is logged multiple times in a step, values are stored in a list.
@@ -69,11 +70,15 @@ class StorageManager:
             self.log_dict[step][key].append(value)
         else:
             self.log_dict[step][key] = value
+
+        # Store aggregation function if provided
+        if aggregation_fn is not None:
+            self.aggregation_fns[key] = aggregation_fn
             
-    def log_tensor(self, step: int, key: str, tensor: torch.Tensor):
+    def log_tensor(self, step: int, key: str, tensor: torch.Tensor, aggregation_fn: Callable | None = None):
         """Log a tensor.
         
-        Tensors are stored in a list for later aggregation.
+        Tensors are stored in a list an aggregated with the provided aggregation_fn.
         """
         if step not in self.log_dict:
             self.log_dict[step] = {}
@@ -86,12 +91,16 @@ class StorageManager:
             self.log_dict[step][key].append(tensor)
         else:
             self.log_dict[step][key] = [tensor]
-            
+
+        # Store aggregation function if provided
+        if aggregation_fn is not None:
+            self.aggregation_fns[key] = aggregation_fn
+
+
     def aggregate_step(self, step: int):
         """Aggregate batch statistics for a step.
-        
-        Lists of tensors are averaged, lists of scalars are averaged,
-        and standard deviations are computed.
+         
+        Uses the aggregation functions provided when logging the tensors, or the default aggregation function provided here.
         """
         if step not in self.log_dict:
             return
@@ -99,14 +108,34 @@ class StorageManager:
         for k, v in list(self.log_dict[step].items()):
             if type(v) == list:
                 if isinstance(v[0], torch.Tensor):
-                    # List of tensors - concatenate and compute statistics
-                    v = torch.cat(v)
-                    self.log_dict[step][k] = torch.mean(v).item()
-                    self.log_dict[step][k + ".std"] = torch.std(v).item()
+                    # List of tensors
+                    values = torch.cat(v)
+                    #agg_fn = lambda x: {'[mean]': torch.mean(x).item(), '[std]': torch.std(x).item()}
+                    agg_fn = lambda x: torch.mean(x).item()
+                       
                 else:
-                    # List of scalars - compute statistics
-                    self.log_dict[step][k] = np.mean(v)
-                    self.log_dict[step][k + ".std"] = np.std(v)
+                    # List of scalars
+                    values = v
+                    #agg_fn = lambda x: {'[mean]': np.mean(x), '[std]': np.std(x)}
+                    agg_fn = lambda x: np.mean(x)
+
+                # look for user-defined aggregation function
+                if k in self.aggregation_fns:
+                    agg_fn = self.aggregation_fns[k]
+
+                # call the aggregation function and store results
+                aggregated_values = agg_fn(values)
+
+                if isinstance(aggregated_values, dict):
+                    # dict with multiple values
+                    for sub_k, sub_v in aggregated_values.items():
+                        self.log_dict[step][k + sub_k] = sub_v
+
+                    if not '' in aggregated_values: # remove original key if not explicitly included
+                        del self.log_dict[step][k]
+                else:
+                    # a single value
+                    self.log_dict[step][k] = aggregated_values
                     
         # Log info about the step
         if self.logger:
