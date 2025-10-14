@@ -14,15 +14,16 @@ from .storage import StorageManager
 
 
 ############################################################################################
-# Modules can subclass MonitoredModule to implement custom monitoring behavior.
+# Modules can subclass MonitorMixin to implement custom monitoring behavior.
 ############################################################################################
 class MonitorMixin:
-    """A torch.nn.Module can subclass this class to log custom metrics during the forward pass.
-    This is used to monitor the attention operation.
+    """Modules can subclass this class to log custom metrics during the forward pass (for example, additional statistics of the attention mechanism).
 
-    During the foward pass, the module can obtain the training monitor via get_training_monitor(). 
+    During the forward pass, call self.is_monitoring() to check if monitoring is active.
 
-    TrainingMonitor automatically calls set_training_monitor on all modules that subclass MonitoredModule.
+    If monitoring is active, call self.get_training_monitor() to get the TrainingMonitor object and log custom metrics.
+
+    The ModuleMonitor checks if modules implement MonitorMixin and automatically calls set_training_monitor on all modules that subclass MonitorMixin.
     """
     def __init__(self):
         self.training_monitor = None
@@ -41,7 +42,6 @@ class MonitorMixin:
     def is_monitoring(self):
         return self.training_monitor is not None and self.training_monitor.is_monitoring()
     
-
 
 #################################################################
 # The ModuleMonitor class
@@ -78,29 +78,40 @@ class ModuleMonitor:
     """
 
     def __init__(self, 
-                 start_step = 0,
                  monitor_interval = 20,
+                 monitor_step_fn: Optional[Callable[[int], bool]] = None,
                  format_module_name_fn: Callable[[str], str] = default_format_module_name_fn,
                  logger=None,
                  monitor=True, # global toggle to turn off monitoring
                  cpu_offload=False): 
         """Init the training monitor."""
+        # strategy pattern for the formatting of module names
         self.format_module_name_fn = format_module_name_fn
 
+        # logging
+        if logger is None:
+            self.logger = logging.getLogger("ModuleMonitor")
+            self.logger.addHandler(logging.NullHandler())  # Silent default logger
+        else:
+            self.logger = logger
+        
+        # the module that we monitor
         self.module = None
         self.module_names = {}                  # a mapping from modules to their names
         self.cpu_offload = cpu_offload          # whether to offload activations to the CPU
 
+        # the reference module, if any
         self.reference_module = None
         self.ignore_reference_module_activations = False
         self.reference_module_names = {}        # a mapping from modules to their names
         self.reference_module_activations = {}  # a mapping from module names to their activations
 
-        self.current_step = start_step
+        # the current step, and whether we monitor it
+        self.monitor = monitor     
         self.monitor_interval = monitor_interval
-        
-        self.monitor = monitor      
-        self.monitor_step = False # do we monitor the current gradient step?
+        self.monitor_step_fn = monitor_step_fn
+        self.current_step = None
+        self.current_step_monitored = False # is the current step being monitored?
 
         # the metrics that we monitor, stored as name -> [regex, metric_fn, metric_aggregation_fn]
         self.activation_metrics = {}
@@ -111,17 +122,9 @@ class ModuleMonitor:
 
         # hook managers for the different hooks that we need for monitoring
         self.activation_hooks = HooksManager()
-        self.activation_difference_hooks = HooksManager()
-        self.reference_module_hooks = HooksManager()
+        self.reference_activation_hooks = HooksManager()
 
-        # Initialize the logger
-        if logger is None:
-            self.logger = logging.getLogger("ModuleMonitor")
-            self.logger.addHandler(logging.NullHandler())  # Silent default logger
-        else:
-            self.logger = logger
-
-        # storage for the logged metrics
+        # the storage object where we store the logged metrics
         self.storage = StorageManager(self.logger)
 
 
@@ -218,7 +221,7 @@ class ModuleMonitor:
         self.remove_reference_module()
 
         self.reference_module = module
-        self.reference_module_hooks = HooksManager()
+        self.reference_activation_hooks = HooksManager()
         if module is None:
             return
 
@@ -229,7 +232,7 @@ class ModuleMonitor:
 
             # register forward hooks for activation monitoring
             hook = self._get_reference_activation_forwad_hook()
-            self.reference_module_hooks.register_forward_hook(m, hook)
+            self.reference_activation_hooks.register_forward_hook(m, hook)
             self.logger.debug(f"Step {self.current_step}: Registered forward hook for reference module %s", name)
 
             # if the module implements the MonitoredModule interface, set the training monitor
@@ -255,7 +258,7 @@ class ModuleMonitor:
                 m.set_training_monitor(None, False)
         # remove the reference module
         self.reference_module = None
-        self.reference_module_hooks.remove_all_hooks()
+        self.reference_activation_hooks.remove_all_hooks()
         self.reference_module_names = {}
         self.reference_module_activations = {}
 
@@ -266,43 +269,41 @@ class ModuleMonitor:
     # This is the basic interface used in the training loop
     #################################################################
     def begin_step(self, step: int):
-        """Notify the monitor that a new step has started. This function should be called before the forward pass. Returns True if the step should be monitored, False otherwise."""
-        if step < self.current_step:
+        """Notify the monitor that a new step has started. This function should be called before the forward pass. Returns True if the step is being monitored, False otherwise."""
+        if self.current_step is not None and step < self.current_step:
             raise ValueError(f"Step {step} cannot be smaller than the current step {self.current_step}.")
         
         # clean-up any previous step (if not done already)
         self.reference_module_activations = {}        
 
         # do we monitor this step?
-        self.monitor_step = self.is_step_monitored(step)
+        self.current_step_monitored = self.is_step_monitored(step)
         self.current_step = step
 
         # check that there is a module to monitor
-        if self.monitor_step and self.module is None:
+        if self.current_step_monitored and self.module is None:
             raise ValueError("No module to monitor. Please set the module first.")
 
         # if we monitor this step, create a new log entry
-        if self.monitor_step: 
+        if self.current_step_monitored: 
             self.storage.create_step_entry(self.current_step)
             
-        return self.monitor_step
+        return self.current_step_monitored
 
 
     def is_monitoring(self):
         """Are we monitoring the current step?"""
-        return self.monitor_step
+        return self.current_step_monitored
 
 
     def is_step_monitored(self, step: int):
         """Is a given step being monitored? Use this to check if a future step will be monitored (for example, the next step)."""
         if not self.monitor: # global toggle to turn off monitoring
             return False
-        monitor_step = step % self.monitor_interval == 1
-        if step <= 20:  # we always monitor the first 20 steps
-            monitor_step = True
-        if not monitor_step and step <= 100: # more frequent monitoring for the first 100 steps
-            monitor_step = step % 20 == 1
-        return monitor_step
+        is_monitored = step % self.monitor_interval == 1
+        if self.monitor_step_fn is not None:
+            is_monitored = self.monitor_step_fn(step)
+        return is_monitored
     
 
     @contextmanager
@@ -310,12 +311,12 @@ class ModuleMonitor:
         """
         Context manager to temporarily disable all monitoring. Use this to compute the validation loss and perform other forward operations that should not be monitored.
         """
-        original_state = self.monitor_step
-        self.monitor_step = False
+        original_state = self.current_step_monitored
+        self.current_step_monitored = False
         try:
             yield
         finally:
-            self.monitor_step = original_state
+            self.current_step_monitored = original_state
 
 
     def after_micro_batch(self):
@@ -334,7 +335,7 @@ class ModuleMonitor:
 
     def get_current_metrics(self):
         """Return the metrics logged during the current step"""
-        if self.monitor_step:
+        if self.current_step_monitored:
             return self.storage.get_step_metrics(self.current_step)
         return {}
     
@@ -435,18 +436,19 @@ class ModuleMonitor:
 
             # raise a warning if no reference module is set
             if not self.has_reference_module():
-                self.logger.warning(f"Step {self.current_step}: Attempted to monitor activations of the reference module, but no reference module is set (for module %s).", module_name)
+                self.logger.warning(f"Step {self.current_step}: Attempted to store activations of the reference module, but no reference module is set (for module %s).", module_name)
                 return
             # raise a warning if the reference module has already stored activations for this module
             if module_name in self.reference_module_activations:
-                self.logger.warning(f"Step {self.current_step}: Attempted to monitor activations of the reference module for module %s, but activations are already stored.", module_name)
+                self.logger.warning(f"Step {self.current_step}: Attempted to store activations of the reference module for module %s, but activations are already stored.", module_name)
                 return
-            # optionally, offoad the activations to the CPU. this is extremely expensive but can save GPU memory.
+            # optionally, offload the activations to the CPU. this is extremely expensive but can save GPU memory.
             if self.cpu_offload:
                 activations = activations.cpu()
             # store the activations
             self.reference_module_activations[module_name] = activations 
             # we are done
+            self.logger.debug(f"Step {self.current_step}: Stored activations of reference module %s with shape %s", module_name, activations.shape)
             return
 
         # activation metrics
@@ -457,6 +459,8 @@ class ModuleMonitor:
                                                 metric_fn,
                                                 metric_aggregation_fn,
                                                 activations)
+                
+        self.logger.debug(f"Step {self.current_step}: Monitored activations of module %s with shape %s", module_name, activations.shape)
 
         # activation difference metrics
         if self.has_reference_module():
@@ -467,16 +471,16 @@ class ModuleMonitor:
                         if self.cpu_offload: # activations need to be on the same device
                             activations = activations.cpu()
 
-                            self._monitor_activation_difference_metric(module_name,
-                                                                       metric_name,
-                                                                       metric_fn,
-                                                                       metric_aggregation_fn,
-                                                                       activations,
-                                                                       ref_activations)
+                        self._monitor_activation_difference_metric(module_name,
+                                                                   metric_name,
+                                                                   metric_fn,
+                                                                   metric_aggregation_fn,
+                                                                   activations,
+                                                                   ref_activations)
                     else:
                         self.logger.warning(f"Step {self.current_step}: No reference module activations found for module %s", module_name)
 
-        self.logger.debug(f"Step {self.current_step}: Monitored activations of module %s with shape %s", module_name, activations.shape)
+            self.logger.debug(f"Step {self.current_step}: Monitored activation differences of module %s with shape %s", module_name, activations.shape)
 
 
     def _get_activation_forwad_hook(self, module_name : str):
@@ -591,7 +595,7 @@ class ModuleMonitor:
 
 
     #################################################################
-    # Internal helper functions
+    # Additional internals
     #################################################################
     def _get_module_name(self, module :Union[str, torch.nn.Module], is_reference :bool) -> str:
         """Look up the name of a torch.nn.Module in the appropriate dict."""
