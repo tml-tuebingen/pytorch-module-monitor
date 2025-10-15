@@ -23,14 +23,12 @@ def monitor_scaled_dot_product_attention(
     activation: torch.Tensor = None,
     is_reference: bool = False
 ) -> None:
-    """
-    Monitor a scaled dot product attention operation.
-    Standalone function that can be registered with a ModuleMonitor.
+    """Monitor a scaled_dot_product_attention operation.
     """
     if not monitor.is_monitoring():
         return
     
-    module_name = monitor._module_name(module, is_reference)
+    module_name = monitor._get_module_name(module, is_reference)
     
     # Detach all tensors from the computational graph
     query = query.detach()
@@ -79,7 +77,7 @@ def monitor_scaled_dot_product_attention(
                 monitor.monitor_activations(f"{module_name}.head_{i_head}.activation", o, is_reference)
     else:
         monitor.logger.warning(
-            f"Step {monitor.step}: monitor_scaled_dot_product_attention assumes "
+            f"Step {monitor.current_step}: monitor_scaled_dot_product_attention assumes "
             f"that S == L and that the key query and value tensor have the same dimension."
         )
     
@@ -96,12 +94,12 @@ def monitor_scaled_dot_product_attention(
             entropy = -torch.sum(w * torch.log(w + 1e-8), dim=-1)
             monitor.log_tensor(f"attention_entropy/{module_name}.head_{i_head}", entropy)
             monitor.logger.debug(
-                f"Step {monitor.step}: Monitored attention entropy for head %s with shape %s",
+                f"Step {monitor.current_step}: Monitored attention entropy for head %s with shape %s",
                 i_head, entropy.shape
             )
     
     monitor.logger.debug(
-        f"Step {monitor.step}: Monitored scaled dot product attention for module %s "
+        f"Step {monitor.current_step}: Monitored scaled dot product attention for module %s "
         f"with query shape %s, key shape %s, value shape %s",
         module_name, query.shape, key.shape, value.shape
     )

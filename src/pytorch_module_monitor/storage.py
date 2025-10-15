@@ -139,10 +139,10 @@ class StorageManager:
                     
         # Log info about the step
         if self.logger:
-            size_mb = sys.getsizeof(self.log_dict) / 1024 / 1024
+            size_kb = sys.getsizeof(self.log_dict) / 1024
             self.logger.info(
                 f"Logged {len(self.log_dict[step])} keys at step {step}. "
-                f"Total size of log data: {size_mb:.2f} MB"
+                f"Total size of log data: {size_kb:.2f} KB"
             )
         
     def condensed_log_dict(self) -> dict:

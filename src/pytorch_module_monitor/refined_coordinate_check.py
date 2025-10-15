@@ -42,6 +42,10 @@ class RefinedCoordinateCheck:
 
         # register forward hooks on the module
         for name, module in self.monitor.module.named_modules():
+            if self.monitor._is_excluded(module):
+                self.logger.debug(f"Module %s is excluded", name)
+                continue
+
             name = self.monitor.format_module_name_fn(name)
             hook = self._get_rcc_forward_hook(name)
             self.rcc_forward_hooks.register_forward_hook(module, hook)
@@ -49,6 +53,10 @@ class RefinedCoordinateCheck:
 
         # register forward hooks on the reference module
         for name, module in self.monitor.reference_module.named_modules():
+            if self.monitor._is_excluded(module, is_reference=True):
+                self.logger.debug(f"Module %s is excluded", name)
+                continue
+
             name = self.monitor.format_module_name_fn(name)
             hook = self._get_rcc_reference_forward_hook(name)
             self.rcc_reference_forward_hooks.register_forward_hook(module, hook)
@@ -75,12 +83,14 @@ class RefinedCoordinateCheck:
         comparison_modules = dict(self.reference_module.named_modules())
 
         for name, module in self.module.named_modules():
-            if not self.format_module_name_fn(name) in self.module_inputs: # we only perform the coordinate check for modules that run "forward" / call their forward hooks (this excludes ModuleList / ModuleDict)
+            if self.monitor._is_excluded(module):
                 continue
-            if self.format_module_name_fn(name) == "[root module]": # we exclude the root module (same result as regular reference module forward pass)
+            if self.format_module_name_fn(name) == "[root module]": # exclude the root module (same result as regular reference module forward pass)
+                continue
+            if not self.format_module_name_fn(name) in self.module_inputs: # only perform the coordinate check for modules that run "forward" / call their forward hooks (this excludes ModuleList / ModuleDict)
                 continue
 
-            # TODO we can make this code not fail / only provide a warning if a key is not in the dict (that is, a forward hooks was not called)
+            # read stored inputs and outputs
             comparison_module = comparison_modules[name]
             name = self.format_module_name_fn(name)
             comparison_input = self.reference_module_inputs[name]
@@ -88,7 +98,7 @@ class RefinedCoordinateCheck:
             module_input = self.module_inputs[name]
             module_output = self.module_outputs[name]
 
-            # move all tensors to the specified device
+            # assure that all tensors are on the same device
             comparison_input = tuple(i.to(device) if isinstance(i, torch.Tensor) else i for i in comparison_input)
             comparison_output = comparison_output.to(device)
             module_input = tuple(i.to(device) if isinstance(i, torch.Tensor) else i for i in module_input)
