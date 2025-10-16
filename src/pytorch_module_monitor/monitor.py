@@ -432,7 +432,7 @@ class ModuleMonitor:
             module_name = self._get_module_name(module, is_reference)
 
             # detach activations from the graph but keep on the device
-            activations = activations.detach()
+            activations = activations.detach().clone()
 
             # if called with the activations of the reference module, store them in the reference_module_activations dict
             if is_reference:

@@ -135,7 +135,7 @@ class RefinedCoordinateCheck:
             with torch.no_grad():
                 # perform a forward pass in the reference module, using the intermediate input from the monitored module (W_0 x_t)
                 self.monitor.ignore_reference_module_activations = True      # temporarily ignore reference module activation hooks (this is important! we do not want to overwrite the reference module activations)
-                W0_xt = W0_module(*Wt_input).detach()
+                W0_xt = W0_module(*Wt_input).detach().clone()
                 self.monitor.ignore_reference_module_activations = False
 
                 # for modules that have a .bias attribute, additionally compute the metrics without the bias
@@ -226,8 +226,8 @@ class RefinedCoordinateCheck:
                 return
             
             # detach input and output from the computational graph
-            input = tuple(i.detach() if isinstance(i, torch.Tensor) else i for i in input)
-            output = output.detach()
+            input = tuple(i.detach().clone() if isinstance(i, torch.Tensor) else i for i in input)
+            output = output.detach().clone()
 
             # move the input and output to the CPU if cpu_offload is set
             if self.cpu_offload:
@@ -250,7 +250,7 @@ class RefinedCoordinateCheck:
                 return
             
             # same as for _get_rcc_forward_hook, but we already have the activations, so we only need to store the inputs
-            input = tuple(i.detach() if isinstance(i, torch.Tensor) else i for i in input)
+            input = tuple(i.detach().clone() if isinstance(i, torch.Tensor) else i for i in input)
 
             # move the input and output to the CPU if cpu_offload is set
             if self.cpu_offload:

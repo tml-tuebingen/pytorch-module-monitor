@@ -31,13 +31,13 @@ def monitor_scaled_dot_product_attention(
     module_name = monitor._get_module_name(module, is_reference)
     
     # Detach all tensors from the computational graph
-    query = query.detach()
-    key = key.detach()
-    value = value.detach()
+    query = query.detach().clone()
+    key = key.detach().clone()
+    value = value.detach().clone()
     if activation is not None:
-        activation = activation.detach()
+        activation = activation.detach().clone()
     if attn_mask is not None:
-        attn_mask = attn_mask.detach()
+        attn_mask = attn_mask.detach().clone()
     
     # Compute attention weights following the reference implementation
     L, S = query.size(-2), key.size(-2)
