@@ -80,11 +80,15 @@ class ModuleMonitor:
     def __init__(self, 
                  monitor_step_fn: Optional[Callable[[int], bool]] = lambda step: step % 20 == 0,
                  format_module_name_fn: Callable[[str], str] = default_format_module_name_fn,
+                 excluded_modules_regex: str = r'$.^',
                  logger=None,
                  cpu_offload=False): 
         """Init the training monitor."""
         # strategy pattern for the formatting of module names
         self.format_module_name_fn = format_module_name_fn
+
+        # compile the regex for excluding modules
+        self.excluded_modules_compiled_re = re.compile(excluded_modules_regex)
 
         # logging
         if logger is None:
@@ -95,7 +99,6 @@ class ModuleMonitor:
         
         # the module that we monitor
         self.module = None
-        self.excluded_modules_compiled_re = re.compile(r'$.^')  # a regex to exclude submodules from monitoring
         self.module_names = {}                                  # a mapping from modules to their names
         self.cpu_offload = cpu_offload                          # whether to offload activations to the CPU
 
@@ -168,7 +171,7 @@ class ModuleMonitor:
     #################################################################
     # Set the module
     #################################################################
-    def set_module(self, module: torch.nn.Module, excluded_modules: str = r'$.^'):
+    def set_module(self, module: torch.nn.Module):
         """Set the module that should be monitored.
 
         We register hooks on the module to implement the monitoring.
@@ -183,9 +186,6 @@ class ModuleMonitor:
         
         # set the module
         self.module = module
-        
-        # compile the regex for excluding modules
-        self.excluded_modules_compiled_re = re.compile(excluded_modules)
 
         for name, m in module.named_modules():
             # generate the name -> module mapping
@@ -424,12 +424,16 @@ class ModuleMonitor:
            In addition, this function can be used to monitor activations that are not the output of a module.
            This is what monitor_scaled_dot_product_attention does.
         """
-        if not self.is_monitoring():
+        if not self.is_monitoring() or self._is_excluded(module, is_reference=is_reference):
             return
 
         try:
-            # assert that module_name is a string
             module_name = self._get_module_name(module, is_reference)
+
+            # we only monitor the activations of modules that return a single tensor
+            if not isinstance(activations, torch.Tensor):
+                self.logger.debug(f"Step {self.current_step}: Ignoring activations of module %s because the model does not return a single tensor (type: %s) (is_reference: %s).", module_name, type(activations), is_reference)
+                return
 
             # detach activations from the graph but keep on the device
             activations = activations.detach().clone()
@@ -443,10 +447,9 @@ class ModuleMonitor:
                 if not self.has_reference_module():
                     self.logger.warning(f"Step {self.current_step}: Attempted to store activations of the reference module, but no reference module is set (for module %s).", module_name)
                     return
-                # raise a warning if the reference module has already stored activations for this module
+                # raise an error if the reference module has already stored activations for this module
                 if module_name in self.reference_module_activations:
-                    self.logger.warning(f"Step {self.current_step}: Attempted to store activations of the reference module for module %s, but activations are already stored.", module_name)
-                    return
+                    raise ValueError(f"Step {self.current_step}: Activations of the reference module for module %s are already stored.", module_name)
                 # optionally, offload the activations to the CPU. this is extremely expensive but can save GPU memory.
                 if self.cpu_offload:
                     activations = activations.cpu()
