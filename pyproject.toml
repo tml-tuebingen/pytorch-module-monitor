@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "torch-module-monitor"
 version = "0.1.0"
-description = "Deep-dive diagnostics for PyTorch model training - monitor activations, parameters, and gradients"
+description = "Diagnostics for PyTorch model training - monitor activations, parameters, and gradients"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
