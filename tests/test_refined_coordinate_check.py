@@ -12,8 +12,8 @@ import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_module_monitor.monitor import ModuleMonitor
-from pytorch_module_monitor.refined_coordinate_check import RefinedCoordinateCheck, l2_norm
+from torch_module_monitor.monitor import ModuleMonitor
+from torch_module_monitor.refined_coordinate_check import RefinedCoordinateCheck, l2_norm
 import copy
 
 

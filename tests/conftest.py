@@ -126,7 +126,7 @@ def sample_image_batch(device):
 @pytest.fixture
 def basic_monitor():
     """Pre-configured ModuleMonitor with default settings."""
-    from pytorch_module_monitor.monitor import ModuleMonitor
+    from torch_module_monitor.monitor import ModuleMonitor
     import logging
 
     logger = logging.getLogger("test_monitor")
@@ -144,7 +144,7 @@ def basic_monitor():
 @pytest.fixture
 def monitor_with_common_metrics():
     """Monitor with common metrics registered."""
-    from pytorch_module_monitor.monitor import ModuleMonitor
+    from torch_module_monitor.monitor import ModuleMonitor
     import logging
 
     logger = logging.getLogger("test_monitor")
