@@ -1,21 +1,47 @@
 # torch-module-monitor
 
-[![PyPI version](https://badge.fury.io/py/torch-module-monitor.svg)](https://badge.fury.io/py/torch-module-monitor)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Deep-dive diagnostics for PyTorch model training. Monitor activations, parameters, and gradients across all layers during training with minimal code changes.
+**Research code release accompanying the NeurIPS 2025 paper:**
 
-## Features
+> Moritz Haas, Sebastian Bordt, Ulrike von Luxburg, and Leena Chennuru Vankadara. "On the Surprising Effectiveness of Large Learning Rates under Standard Width Scaling." *arXiv preprint arXiv:2505.22491*, 2025.
 
-- 🔍 **Comprehensive Monitoring**: Track activations, parameters, and gradients for any PyTorch model
-- 📊 **Flexible Metrics**: Define custom metrics with regex-based filtering for specific layers
-- 🔄 **Reference Module Comparison**: Compare your trained model against a reference (e.g., model at initialization)
-- 🎯 **Refined Coordinate Check**: Decompose activation changes into weight updates vs. input drift ([Yang et al., 2025](https://arxiv.org/abs/2505.22491))
-- 👁️ **Attention Monitoring**: Built-in support for monitoring multi-head attention mechanisms
-- 💾 **Storage & Export**: Aggregate metrics across micro-batches and export to HDF5
-- ⚡ **Step-Based Monitoring**: Selectively monitor specific training steps to reduce overhead
-- 🔌 **Framework Agnostic**: Works with Weights & Biases, TensorBoard, or any logging framework
+---
+
+## ⚠️ Important Notice
+
+**This is research code, not production software.** It is designed for:
+- Researchers monitoring statistics of **small to medium-sized neural networks**
+- Performing **refined coordinate checks** for hyperparameter tuning analysis
+- **Single-GPU training** scenarios
+
+**Not suitable for:**
+- Production deployments
+- Multi-GPU training (see [Multi-GPU Limitations](#multi-gpu-training))
+- Large-scale models without careful memory management
+
+---
+
+## Overview
+
+`torch-module-monitor` enables deep-dive diagnostics of PyTorch model training with minimal code changes. The library provides two main capabilities:
+
+### 1. Arbitrary Metric Computation
+Monitor **activations**, **parameters**, and **gradients** across all model layers:
+- Define custom metrics with a single line of code
+- Apply metrics selectively using regex-based layer filtering
+- Built-in support for monitoring attention mechanisms (query/key/value tensors and entropy)
+- Aggregate statistics across micro-batches
+- Export metrics to HDF5 for post-training analysis
+
+### 2. Refined Coordinate Check (RCC)
+Implementation of the refined muP coordinate check from our paper:
+- Decomposes activation changes into: **(W_t - W_0)x_t** (weight updates) vs. **W_0(x_t - x_0)** (input drift)
+- Essential for analyzing training dynamics under different hyperparameter scalings
+- Requires reference module (e.g., model at initialization)
+
+---
 
 ## Installation
 
@@ -23,151 +49,158 @@ Deep-dive diagnostics for PyTorch model training. Monitor activations, parameter
 pip install torch-module-monitor
 ```
 
-### Optional Dependencies
-
+**Development install:**
 ```bash
-# For Weights & Biases integration
-pip install torch-module-monitor[wandb]
-
-# For TensorBoard integration
-pip install torch-module-monitor[tb]
-
-# For development
-pip install torch-module-monitor[dev]
+git clone https://github.com/tml-tuebingen/torch-module-monitor.git
+cd torch-module-monitor
+pip install -e .
 ```
+
+**Optional dependencies:**
+```bash
+pip install torch-module-monitor[wandb]  # Weights & Biases integration
+pip install torch-module-monitor[tb]     # TensorBoard integration
+pip install torch-module-monitor[dev]    # Development tools (pytest, black, etc.)
+```
+
+---
 
 ## Quick Start
 
+### Basic Monitoring
+
 ```python
-import torch
-import torch.nn as nn
 from torch_module_monitor import ModuleMonitor
 
-# Create your model
-model = nn.Sequential(
-    nn.Linear(10, 20),
-    nn.ReLU(),
-    nn.Linear(20, 2)
-)
-
-# Set up the monitor
+# Initialize monitor
 monitor = ModuleMonitor(
     monitor_step_fn=lambda step: step % 10 == 0  # Monitor every 10 steps
 )
 monitor.set_module(model)
 
-# Add metrics
+# Define metrics in one line each
 monitor.add_activation_metric("mean", lambda x: x.mean())
 monitor.add_activation_metric("std", lambda x: x.std())
 monitor.add_parameter_metric("norm", lambda x: x.norm())
 monitor.add_gradient_metric("norm", lambda x: x.norm())
 
 # Training loop
-optimizer = torch.optim.Adam(model.parameters())
-
 for step, (inputs, targets) in enumerate(dataloader):
-    # Begin monitoring step
     monitor.begin_step(step)
 
-    # Forward pass (activations are automatically captured)
-    outputs = model(inputs)
+    outputs = model(inputs)  # Activations captured automatically via hooks
     loss = criterion(outputs, targets)
-
-    # Backward pass
     loss.backward()
 
-    # Monitor parameters and gradients
+    monitor.monitor_parameters()  # Compute parameter metrics
+    monitor.monitor_gradients()   # Compute gradient metrics
+
+    optimizer.step()
+    optimizer.zero_grad()
+    monitor.end_step()
+
+    # Retrieve metrics for logging
+    if monitor.is_step_monitored(step):
+        metrics = monitor.get_step_metrics()
+        wandb.log(metrics)  # or tensorboard, etc.
+```
+
+### Refined Coordinate Check
+
+```python
+import copy
+from torch_module_monitor import ModuleMonitor, RefinedCoordinateCheck
+
+# Save model at initialization
+model_init = copy.deepcopy(model)
+
+# Set up monitoring with reference module
+monitor = ModuleMonitor(monitor_step_fn=lambda step: step % 100 == 0)
+monitor.set_module(model)
+monitor.set_reference_module(model_init)
+
+# Initialize RCC
+rcc = RefinedCoordinateCheck(monitor)
+
+# Training loop
+for step, (inputs, targets) in enumerate(dataloader):
+    monitor.begin_step(step)
+
+    # Run reference model (not monitored, just stores activations)
+    with monitor.no_monitor():
+        _ = model_init(inputs)
+
+    # Run trained model (monitored + compared with reference)
+    outputs = model(inputs)
+
+    # Perform refined coordinate check
+    rcc.refined_coordinate_check()  # Logs (W_t-W_0)x_t and W_0(x_t-x_0)
+
+    loss = criterion(outputs, targets)
+    loss.backward()
+
     monitor.monitor_parameters()
     monitor.monitor_gradients()
 
-    # Optimizer step
     optimizer.step()
     optimizer.zero_grad()
-
-    # Finalize step and get metrics
     monitor.end_step()
-
-    if monitor.is_step_monitored(step):
-        metrics = monitor.get_step_metrics()
-        # Log to your preferred backend (wandb, tensorboard, etc.)
-        wandb.log(metrics)
 ```
 
-## Core Concepts
+The RCC logs metrics such as:
+- `RCC (W_t-W_0)x_t/{layer_name}/l2norm` - Change from weight updates
+- `RCC W_0(x_t-x_0)/{layer_name}/l2norm` - Change from input drift
 
-### Activation Monitoring
+---
 
-Activations (layer outputs) are automatically captured during forward passes via PyTorch hooks. Metrics are logged as `activation/{module_name}/{metric_name}`.
+## Key Features
+
+### Regex-Based Layer Filtering
+
+Apply metrics selectively to specific layers:
 
 ```python
-# Monitor L2 norm of all layer activations
-monitor.add_activation_metric("l2_norm", lambda x: x.norm(dim=-1).mean())
-
 # Monitor only attention layers
 monitor.add_activation_metric(
-    "attention_mean",
-    lambda x: x.mean(),
-    metric_regex=r".*attention.*"  # Regex to match layer names
+    "attention_entropy",
+    lambda x: compute_entropy(x),
+    metric_regex=r".*attention.*"
+)
+
+# Monitor only output layers
+monitor.add_parameter_metric(
+    "output_norm",
+    lambda x: x.norm(),
+    metric_regex=r".*fc_out.*"
 )
 ```
 
 ### Reference Module Comparison
 
-Compare your model against a reference (e.g., initialization) to track parameter/activation drift:
+Track parameter and activation drift from initialization:
 
 ```python
 import copy
 
-# Save reference at initialization
 reference_model = copy.deepcopy(model)
 monitor.set_reference_module(reference_model)
 
-# Add difference metrics
-monitor.add_activation_difference_metric(
-    "l2_distance",
-    lambda act, ref_act: (act - ref_act).norm(dim=-1).mean()
-)
-
+# Track how much parameters changed from initialization
 monitor.add_parameter_difference_metric(
     "l2_distance",
     lambda param, ref_param: (param - ref_param).norm()
 )
 
-# During training, run reference model first
-with monitor.no_monitor():
-    _ = reference_model(inputs)  # Not monitored, just stores activations
-outputs = model(inputs)  # Monitored + compares with reference
+# Track how much activations changed from initialization
+monitor.add_activation_difference_metric(
+    "l2_distance",
+    lambda act, ref_act: (act - ref_act).norm(dim=-1).mean()
+)
 ```
 
-### Refined Coordinate Check (RCC)
+### Micro-Batch Aggregation
 
-Decompose activation changes into weight updates vs. input drift for muP coordinate checking:
-
-```python
-from torch_module_monitor import RefinedCoordinateCheck
-
-# Set up RCC (requires reference module)
-rcc = RefinedCoordinateCheck(monitor)
-
-# In your training loop
-monitor.begin_step(step)
-
-# Run both models
-with monitor.no_monitor():
-    _ = reference_model(inputs)
-outputs = model(inputs)
-
-# Perform RCC analysis
-rcc.refined_coordinate_check()  # Logs (W_t-W_0)x_t and W_0(x_t-x_0)
-
-monitor.end_step()
-```
-
-See the [RCC paper](https://arxiv.org/abs/2505.22491) for details on the methodology.
-
-### Micro-batch Support
-
-For gradient accumulation, use `after_micro_batch()`:
+For gradient accumulation scenarios:
 
 ```python
 monitor.begin_step(step)
@@ -176,99 +209,166 @@ for micro_batch in batches:
     outputs = model(micro_batch)
     loss = criterion(outputs, targets)
     loss.backward()
-
     monitor.after_micro_batch()  # Clear reference activations
 
 monitor.monitor_gradients()
 optimizer.step()
-monitor.end_step()  # Aggregates metrics across all micro-batches
+monitor.end_step()  # Aggregates across all micro-batches
 ```
+
+---
 
 ## Advanced Usage
 
-### Attention Monitoring
+### Complex Modules: MonitorMixin Pattern
+
+**By default**, the monitor only tracks modules that return a single tensor. For complex modules with structured outputs (e.g., attention mechanisms), inherit from `MonitorMixin` to log custom metrics.
+
+**Example: Monitoring Attention Mechanisms**
 
 ```python
-from torch_module_monitor import monitor_scaled_dot_product_attention
+from torch_module_monitor import MonitorMixin, monitor_scaled_dot_product_attention
+import torch.nn as nn
+import torch.nn.functional as F
 
-class MyAttention(nn.Module, MonitorMixin):
+class MultiHeadAttention(nn.Module, MonitorMixin):
+    def __init__(self, d_model, n_heads):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_model = d_model
+        # ... initialize projections
+
     def forward(self, x):
-        q, k, v = self.get_qkv(x)
+        # Compute query, key, value
+        q, k, v = self.compute_qkv(x)  # Shape: (batch, n_heads, seq_len, d_k)
 
-        # Standard attention
-        output = F.scaled_dot_product_attention(q, k, v)
+        # Standard scaled dot-product attention
+        attn_output = F.scaled_dot_product_attention(q, k, v)
 
-        # Monitor attention internals
+        # Monitor attention internals (if monitoring is active)
         if self.is_monitoring:
             monitor_scaled_dot_product_attention(
-                self.get_module_monitor(),
+                monitor=self.get_module_monitor(),
                 module=self,
-                query=q, key=k, value=v,
-                activation=output
+                query=q,
+                key=k,
+                value=v,
+                activation=attn_output
             )
 
-        return output
+        return self.output_projection(attn_output)
 ```
 
-### Custom Metrics in Modules
+This logs per-head metrics:
+- `activation/{module_name}.head_{i}.query/metric_name`
+- `activation/{module_name}.head_{i}.key/metric_name`
+- `activation/{module_name}.head_{i}.value/metric_name`
+- `attention_entropy/{module_name}.head_{i}` - Attention entropy
+
+**Example: Custom Metrics in Modules**
 
 ```python
 from torch_module_monitor import MonitorMixin
 
 class CustomLayer(nn.Module, MonitorMixin):
     def forward(self, x):
-        output = self.transform(x)
+        intermediate = self.transform(x)
+        output = self.activation(intermediate)
 
+        # Log custom statistics when monitoring is active
         if self.is_monitoring:
-            # Log custom intermediate values
-            self.get_module_monitor().log_tensor(
-                "custom_metric/my_layer/intermediate",
-                some_intermediate_value
-            )
+            monitor = self.get_module_monitor()
+            monitor.log_tensor("intermediate_norm", intermediate.norm(dim=-1))
+            monitor.log_scalar("sparsity", (intermediate == 0).float().mean())
 
         return output
 ```
 
-### Export to HDF5
+### Export and Analysis
 
 ```python
-# Get all metrics
-all_metrics = monitor.get_all_metrics()
+# Export all metrics to HDF5
+monitor.storage.save_hdf5("metrics.h5")
 
-# Export via storage manager
-monitor.storage.save_hdf5("training_metrics.h5")
-
-# Load later for analysis
+# Load for post-training analysis
 from torch_module_monitor import StorageManager
-metrics = StorageManager.load_hdf5("training_metrics.h5")
+metrics = StorageManager.load_hdf5("metrics.h5")
+
+# Metrics are organized as: {metric_name: {step: value}}
+for metric_name, step_values in metrics.items():
+    steps = sorted(step_values.keys())
+    values = [step_values[s] for s in steps]
+    # Plot or analyze...
 ```
 
-## Documentation
+---
 
-Full documentation is available at [torch-module-monitor.readthedocs.io](https://torch-module-monitor.readthedocs.io).
+## Multi-GPU Training
+
+**Current status:** The code was developed and tested for **single-GPU training**.
+
+### What Works
+- Activation, parameter, and gradient tracking on a single GPU
+
+### Multi-GPU Limitations
+
+**Activation tracking:**
+- Each GPU would need its own `ModuleMonitor` instance
+- Activations are distributed across GPUs (not automatically gathered)
+- Extension to multi-GPU is straightforward but requires manual setup
+
+**Parameter and gradient tracking:**
+- Parameters and gradients are typically replicated or sharded across GPUs
+- Would need to gather metrics on rank 0 for centralized logging
+- Requires integration with your distributed training framework (DDP, FSDP, etc.)
+
+**Refined Coordinate Check:**
+- ⚠️ **Not straightforward to extend to multi-GPU**
+- RCC requires additional forward passes with mixed inputs
+- Synchronization across GPUs for reference activations is non-trivial
+- We recommend using RCC on single-GPU or smaller models
+
+### Recommendation
+For multi-GPU scenarios, we recommend:
+1. Use single-GPU for RCC analysis on a smaller proxy model
+2. Monitor basic metrics (norms, means) on multi-GPU setups with custom gathering logic
+3. Contribute multi-GPU support (PRs welcome!)
+
+---
 
 ## Citation
 
-If you use the Refined Coordinate Check in your research, please cite:
+If you use this code in your research, please cite our paper:
 
 ```bibtex
-@article{yang2025refined,
-  title={Refined Coordinate Checks for Feature Learning},
-  author={Yang, Greg and Malladi, Sadhika and Bordt, Sebastian and Huh, Minyoung and Nanda, Neel and Gao, Brando and Hu, Edward and Timbers, Fern and Gur-Ari, Guy and Sholto, Douglas and others},
+@article{haas2025splargelr,
+  title={On the Surprising Effectiveness of Large Learning Rates under Standard Width Scaling},
+  author={Haas, Moritz and Bordt, Sebastian and von Luxburg, Ulrike and Vankadara, Leena Chennuru},
   journal={arXiv preprint arXiv:2505.22491},
   year={2025}
 }
 ```
 
+---
+
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+This is research code, but contributions are welcome! If you:
+- Find bugs
+- Add multi-GPU support
+- Implement new monitoring patterns
+- Improve documentation
+
+Please open an issue or pull request on GitHub.
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
+
+---
 
 ## Acknowledgments
 
-- Refined Coordinate Check implementation based on [Yang et al., 2025](https://arxiv.org/abs/2505.22491)
-- Developed at the [Tübingen Machine Learning Lab](https://tml.cs.uni-tuebingen.de/)
+Developed at the [Tübingen Machine Learning Lab](https://tml.cs.uni-tuebingen.de/).
