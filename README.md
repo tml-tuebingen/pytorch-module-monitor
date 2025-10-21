@@ -107,7 +107,6 @@ monitor.add_activation_metric(
 In infinite width theory, we often want to measure the difference of activations and parameters to the model at initialization. We implement this via an arbitrary reference model to which our model can be compared.
 
 ```python
-reference_model = copy.deepcopy(model)
 monitor.set_reference_module(reference_model)
 
 # Track drift from initialization
