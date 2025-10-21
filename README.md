@@ -87,6 +87,8 @@ Log the collected metrics in a single line of code:
 wandb.log(training_monitor.get_step_metrics(), step=current_step)
 ```
 
+[Link to wandb logs of nanoGPT run](https://wandb.ai/public-runs/shakespeare-char/runs/943n8dnt)
+
 ![monitor](images/wandb.png)
 
 ---
