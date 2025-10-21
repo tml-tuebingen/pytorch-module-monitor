@@ -167,7 +167,7 @@ If you use this code, please cite:
 @inproceedings{haas2025splargelr,
   title={On the Surprising Effectiveness of Large Learning Rates under Standard Width Scaling},
   author={Haas, Moritz and Bordt, Sebastian and von Luxburg, Ulrike and Vankadara, Leena Chennuru},
-  booktitle={Neurips},
+  booktitle={Advances in Neural Information Processing Systems 38},
   year={2025}
 }
 ```
