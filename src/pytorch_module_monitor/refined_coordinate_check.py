@@ -8,11 +8,24 @@ from .hooks import HooksManager
 from .monitor import ModuleMonitor  
 
 def l2_norm(tensor: torch.Tensor) -> torch.Tensor:
-    """Compute L2 norm along last dimension."""
+    """Compute L2 norm along the last dimension.
+
+    Args:
+        tensor: Input tensor of any shape.
+
+    Returns:
+        Tensor with shape tensor.shape[:-1] containing L2 norms.
+    """
     return torch.linalg.vector_norm(tensor, ord=2, dim=-1)
 
 class RefinedCoordinateCheck:
-    """Performs the *refined* coordinate check (RCC) from https://arxiv.org/abs/2505.22491
+    """Performs the refined coordinate check (RCC) from https://arxiv.org/abs/2505.22491.
+
+    RCC decomposes activation changes into two components:
+    - (W_t - W_0) x_t: Change due to weight updates
+    - W_0 (x_t - x_0): Change due to input changes
+
+    This helps diagnose whether model changes are driven by weight learning or input drift.
     """
 
     #######################################################################################
@@ -20,6 +33,14 @@ class RefinedCoordinateCheck:
     #######################################################################################
     def __init__(self,
                  monitor: ModuleMonitor):
+        """Initialize the RefinedCoordinateCheck.
+
+        Args:
+            monitor: ModuleMonitor instance with both module and reference_module set.
+
+        Raises:
+            ValueError: If module or reference_module is not set on the monitor.
+        """
         if monitor.module is None:
             raise ValueError("Set the module to monitor before setting up the refined coordinate check.")
         if monitor.reference_module is None:
@@ -64,11 +85,16 @@ class RefinedCoordinateCheck:
 
 
     def refined_coordinate_check(self):
-        """Perform the *refined* coordinate check (RCC) from https://arxiv.org/abs/2505.22491.
+        """Perform the refined coordinate check (RCC).
 
-        This function should be called after the forward pass of the monitored module.
+        Must be called after forward passes of both the reference module and monitored module.
+        This performs additional forward passes to compute W_0(x_t) for the decomposition.
 
-        This function performs additional forward passes. It compares the activation differences of the monitored module and the reference module.
+        Logs metrics under "RCC (W_t-W_0)x_t/" and "RCC W_0(x_t-x_0)/" prefixes.
+
+        Note:
+            This performs extra forward passes, so wrap calls properly to avoid interfering
+            with training (e.g., use monitor.no_monitor() if needed for the reference pass).
         """
         if not self.monitor.is_monitoring():
             return
@@ -121,110 +147,126 @@ class RefinedCoordinateCheck:
     #######################################################################################
     # Implementation details
     #######################################################################################
-    def _module_refined_coordinate_check(self, 
-                                     module_name: str, 
-                                     Wt_input: Tuple[Any],            
-                                     Wt_xt: torch.Tensor, 
-                                     Wt_module: torch.nn.Module,        
-                                     W0_input: Tuple[Any],              
-                                     W0_x0: torch.Tensor,       
+    def _module_refined_coordinate_check(self,
+                                     module_name: str,
+                                     Wt_input: Tuple[Any],
+                                     Wt_xt: torch.Tensor,
+                                     Wt_module: torch.nn.Module,
+                                     W0_input: Tuple[Any],
+                                     W0_x0: torch.Tensor,
                                      W0_module: torch.nn.Module):
-            
-            self.logger.debug(f"Step {self.monitor.current_step}: Performing refined coordinate check for module %s with shape %s ...", module_name, Wt_xt.shape)
-            
-            with torch.no_grad():
-                # perform a forward pass in the reference module, using the intermediate input from the monitored module (W_0 x_t)
-                self.monitor.ignore_reference_module_activations = True      # temporarily ignore reference module activation hooks (this is important! we do not want to overwrite the reference module activations)
-                W0_xt = W0_module(*Wt_input).detach().clone()
-                self.monitor.ignore_reference_module_activations = False
+        """Perform RCC for a single module.
 
-                # for modules that have a .bias attribute, additionally compute the metrics without the bias
-                W0_x0_nobias, Wt_xt_nobias, W0_xt_nobias = None, None, None
-                if hasattr(Wt_module, "bias"):
-                    if Wt_module.bias is None: # no bias for this module, we are already done
-                        W0_x0_nobias = W0_x0
-                        W0_xt_nobias = W0_xt
-                        Wt_xt_nobias = Wt_xt
-                    else: # substract bias
-                        try:
-                            W0_x0_nobias = W0_x0 - W0_module.bias
-                            W0_xt_nobias = W0_xt - W0_module.bias
-                            Wt_xt_nobias = Wt_xt - Wt_module.bias
-                        except Exception as e:
-                            self.logger.warning(f"Step {self.monitor.current_step}: Refined coordinate check: Failed to compute bias-free activations for module %s: %s", module_name, e)
-                            W0_x0_nobias, W0_xt_nobias, Wt_xt_nobias = None, None, None
+        Computes the decomposition:
+        - (W_t - W_0) x_t = W_t x_t - W_0 x_t
+        - W_0 (x_t - x_0) = W_0 x_t - W_0 x_0
 
-            if isinstance(Wt_module, torch.nn.Embedding):      # special handling for embedding layers: we only compute (W_t-W_0) x_t           
-                result = l2_norm(Wt_xt - W0_xt)
-                log_entry = f"RCC (W_t-W_0)x_t/{module_name}/l2norm"
-                self.monitor.log_tensor(log_entry, result)
-                return
+        Args:
+            module_name: Name of the module being checked.
+            Wt_input: Input to the monitored module (at step t).
+            Wt_xt: Output of monitored module (W_t x_t).
+            Wt_module: The monitored module.
+            W0_input: Input to the reference module (at step 0).
+            W0_x0: Output of reference module (W_0 x_0).
+            W0_module: The reference module.
+        """
 
-            # Frobenious norm of (W_t-W_0) x_t            
+        self.logger.debug(f"Step {self.monitor.current_step}: Performing refined coordinate check for module %s with shape %s ...", module_name, Wt_xt.shape)
+
+        with torch.no_grad():
+            # perform a forward pass in the reference module, using the intermediate input from the monitored module (W_0 x_t)
+            self.monitor.ignore_reference_module_activations = True      # temporarily ignore reference module activation hooks (this is important! we do not want to overwrite the reference module activations)
+            W0_xt = W0_module(*Wt_input).detach().clone()
+            self.monitor.ignore_reference_module_activations = False
+
+            # for modules that have a .bias attribute, additionally compute the metrics without the bias
+            W0_x0_nobias, Wt_xt_nobias, W0_xt_nobias = None, None, None
+            if hasattr(Wt_module, "bias"):
+                if Wt_module.bias is None: # no bias for this module, we are already done
+                    W0_x0_nobias = W0_x0
+                    W0_xt_nobias = W0_xt
+                    Wt_xt_nobias = Wt_xt
+                else: # substract bias
+                    try:
+                        W0_x0_nobias = W0_x0 - W0_module.bias
+                        W0_xt_nobias = W0_xt - W0_module.bias
+                        Wt_xt_nobias = Wt_xt - Wt_module.bias
+                    except Exception as e:
+                        self.logger.warning(f"Step {self.monitor.current_step}: Refined coordinate check: Failed to compute bias-free activations for module %s: %s", module_name, e)
+                        W0_x0_nobias, W0_xt_nobias, Wt_xt_nobias = None, None, None
+
+        if isinstance(Wt_module, torch.nn.Embedding):      # special handling for embedding layers: we only compute (W_t-W_0) x_t
             result = l2_norm(Wt_xt - W0_xt)
             log_entry = f"RCC (W_t-W_0)x_t/{module_name}/l2norm"
             self.monitor.log_tensor(log_entry, result)
+            return
 
-            # Frobenious norm of W_0 (x_t-x_0)
-            result = l2_norm(W0_xt - W0_x0)
-            log_entry = f"RCC W_0(x_t-x_0)/{module_name}/l2norm"
+        # Frobenious norm of (W_t-W_0) x_t
+        result = l2_norm(Wt_xt - W0_xt)
+        log_entry = f"RCC (W_t-W_0)x_t/{module_name}/l2norm"
+        self.monitor.log_tensor(log_entry, result)
+
+        # Frobenious norm of W_0 (x_t-x_0)
+        result = l2_norm(W0_xt - W0_x0)
+        log_entry = f"RCC W_0(x_t-x_0)/{module_name}/l2norm"
+        self.monitor.log_tensor(log_entry, result)
+
+        # norm of x_t
+        xt = Wt_input[0]
+        if isinstance(xt, torch.Tensor):
+            self.logger.debug(f"Step {self.monitor.current_step}: Refined coordinate check: Input to module {module_name} is a tensor with shape {xt.shape}")
+            result = l2_norm(xt)
+            log_entry = f"RCC x_t/{module_name}/l2norm"
+            self.monitor.log_tensor(log_entry, result)
+        else:
+            self.logger.debug(f"Step {self.monitor.current_step}: Refined coordinate check: Input to module {module_name} is not a tensor, but {type(xt)}")
+
+        # norm of x_t - x_0
+        x0 = W0_input[0]
+        if isinstance(x0, torch.Tensor) and isinstance(xt, torch.Tensor):
+            result = l2_norm(xt - x0)
+            log_entry = f"RCC (x_t-x_0)/{module_name}/l2norm"
+            self.monitor.log_tensor(log_entry, result)
+        else:
+            self.logger.debug(f"Step {self.monitor.current_step}: Refined coordinate check: Input to module {module_name} is not a tensor, but {type(x0)}")
+
+        # for linear layers and layer norm layers, the terms without the bias provide to the coordinate check for the weight
+        if isinstance(Wt_module, torch.nn.Linear) or isinstance(Wt_module, torch.nn.LayerNorm):
+            result = l2_norm(Wt_xt_nobias - W0_xt_nobias)       # Bias free Frobenious norm of (W_t-W_0) x_t
+            log_entry = f"RCC (W_t-W_0)x_t/{module_name}.weight/l2norm"
             self.monitor.log_tensor(log_entry, result)
 
-            # norm of x_t
-            xt = Wt_input[0]
-            if isinstance(xt, torch.Tensor):
-                self.logger.debug(f"Step {self.monitor.current_step}: Refined coordinate check: Input to module {module_name} is a tensor with shape {xt.shape}")
-                result = l2_norm(xt)
-                log_entry = f"RCC x_t/{module_name}/l2norm"
-                self.monitor.log_tensor(log_entry, result)
-            else:
-                self.logger.debug(f"Step {self.monitor.current_step}: Refined coordinate check: Input to module {module_name} is not a tensor, but {type(xt)}")
+            result = l2_norm(W0_xt_nobias - W0_x0_nobias)       # Bias free Frobenious norm of W_0 (x_t-x_0)
+            log_entry = f"RCC W_0(x_t-x_0)/{module_name}.weight/l2norm"
+            self.monitor.log_tensor(log_entry, result)
 
-            # norm of x_t - x_0
-            x0 = W0_input[0]
-            if isinstance(x0, torch.Tensor) and isinstance(xt, torch.Tensor):
-                result = l2_norm(xt - x0)
-                log_entry = f"RCC (x_t-x_0)/{module_name}/l2norm"
-                self.monitor.log_tensor(log_entry, result)
-            else:
-                self.logger.debug(f"Step {self.monitor.current_step}: Refined coordinate check: Input to module {module_name} is not a tensor, but {type(x0)}")
+            result = l2_norm(Wt_xt_nobias)                      # bias free norm of Wt_xt
+            log_entry = f"RCC (W_t-W_0)x_t/{module_name}.weight/W_t x_t/l2norm"
+            self.monitor.log_tensor(log_entry, result)
 
-            # for linear layers and layer norm layers, the terms without the bias provide to the coordinate check for the weight
-            if isinstance(Wt_module, torch.nn.Linear) or isinstance(Wt_module, torch.nn.LayerNorm):
-                result = l2_norm(Wt_xt_nobias - W0_xt_nobias)       # Bias free Frobenious norm of (W_t-W_0) x_t
-                log_entry = f"RCC (W_t-W_0)x_t/{module_name}.weight/l2norm"
-                self.monitor.log_tensor(log_entry, result)
+            result = l2_norm(W0_x0_nobias)                      # bias free norm of W0_x0
+            log_entry = f"RCC W_0(x_t-x_0)/{module_name}.weight/W_0 x_0/l2norm"
+            self.monitor.log_tensor(log_entry, result)
 
-                result = l2_norm(W0_xt_nobias - W0_x0_nobias)       # Bias free Frobenious norm of W_0 (x_t-x_0)
-                log_entry = f"RCC W_0(x_t-x_0)/{module_name}.weight/l2norm"
-                self.monitor.log_tensor(log_entry, result)
+        # for layer norm, additionally log x-E(x)/Var(x) as input to the weights
+        if isinstance(Wt_module, torch.nn.LayerNorm):
+            xt = torch.nn.functional.layer_norm(Wt_input[0], Wt_module.normalized_shape, None, None, Wt_module.eps)
+            result = l2_norm(xt)
+            log_entry = f"RCC (W_t-W_0)x_t/{module_name}.weight/x_t/l2norm"
+            self.monitor.log_tensor(log_entry, result)
 
-                result = l2_norm(Wt_xt_nobias)                      # bias free norm of Wt_xt
-                log_entry = f"RCC (W_t-W_0)x_t/{module_name}.weight/W_t x_t/l2norm"
-                self.monitor.log_tensor(log_entry, result)
-
-                result = l2_norm(W0_x0_nobias)                      # bias free norm of W0_x0
-                log_entry = f"RCC W_0(x_t-x_0)/{module_name}.weight/W_0 x_0/l2norm"
-                self.monitor.log_tensor(log_entry, result)
-
-            # for layer norm, additionally log x-E(x)/Var(x) as input to the weights
-            if isinstance(Wt_module, torch.nn.LayerNorm):           
-                xt = torch.nn.functional.layer_norm(Wt_input[0], Wt_module.normalized_shape, None, None, Wt_module.eps)
-                result = l2_norm(xt)
-                log_entry = f"RCC (W_t-W_0)x_t/{module_name}.weight/x_t/l2norm"
-                self.monitor.log_tensor(log_entry, result)
-
-                x0 = torch.nn.functional.layer_norm(W0_input[0], W0_module.normalized_shape, None, None, W0_module.eps)
-                result = l2_norm(xt - x0)
-                log_entry = f"RCC W_0(x_t-x_0)/{module_name}.weight/x_t-x_0/l2norm"
-                self.monitor.log_tensor(log_entry, result)
+            x0 = torch.nn.functional.layer_norm(W0_input[0], W0_module.normalized_shape, None, None, W0_module.eps)
+            result = l2_norm(xt - x0)
+            log_entry = f"RCC W_0(x_t-x_0)/{module_name}.weight/x_t-x_0/l2norm"
+            self.monitor.log_tensor(log_entry, result)
 
 
     def _get_rcc_forward_hook(self, module_name: str):
+        """Create a forward hook for the monitored module to capture inputs/outputs."""
         def hook(module, input, output):
             if not self.monitor.is_monitoring():
                 return
-            
+
             # detach input and output from the computational graph
             input = tuple(i.detach().clone() if isinstance(i, torch.Tensor) else i for i in input)
             output = output.detach().clone()
@@ -241,14 +283,15 @@ class RefinedCoordinateCheck:
     
 
     def _get_rcc_reference_forward_hook(self, module_name: str):
+        """Create a forward hook for the reference module to capture inputs."""
         def hook(module, input, output):
             if not self.monitor.is_monitoring():
                 return
-            
+
             if self.monitor.ignore_reference_module_activations: # very important! otherwise we re-set the inputs to the reference modules during the additional rcc-forward passes
                                                          # in the future, this should be replaced with a more general no_monitor context manager
                 return
-            
+
             # same as for _get_rcc_forward_hook, but we already have the activations, so we only need to store the inputs
             input = tuple(i.detach().clone() if isinstance(i, torch.Tensor) else i for i in input)
 

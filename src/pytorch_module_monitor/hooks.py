@@ -11,13 +11,14 @@ class HooksManager:
         """
         self.hooks: Dict[nn.Module, Any] = {}
 
-    def register_forward_hook(self, 
+    def register_forward_hook(self,
                               module: nn.Module,
                               hook_fn: Callable) -> None:
         """Register a forward hook on the specified module.
-        
+
         Args:
-            hook_fn: The hook function to register
+            module: The module to register the hook on.
+            hook_fn: The hook function to register (signature: fn(module, input, output)).
         """
         # Remove existing hook if present
         if module in self.hooks:

@@ -6,9 +6,9 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pytorch-module-monitor"
+name = "torch-module-monitor"
 version = "0.1.0"
-description = "Deep-Dive Diagnostics for PyTorch models"
+description = "Deep-dive diagnostics for PyTorch model training - monitor activations, parameters, and gradients"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
@@ -17,7 +17,22 @@ authors = [
 requires-python = ">=3.9"
 dependencies = [
     "torch>=2.1",
-    "torchmetrics>1.5"
+    "numpy>=1.24",
+    "h5py>=3.8",
+]
+keywords = ["pytorch", "deep-learning", "diagnostics", "monitoring", "training", "mup", "coordinate-check", "activations", "gradients"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 
 [project.optional-dependencies]
@@ -39,10 +54,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/pytorch-module-monitor"
-Source = "https://github.com/yourname/pytorch-module-monitor"
-Issues = "https://github.com/yourname/pytorch-module-monitor/issues"
-Documentation = "https://pytorch-module-monitor.readthedocs.io"
+Homepage = "https://github.com/yourname/torch-module-monitor"
+Source = "https://github.com/yourname/torch-module-monitor"
+Issues = "https://github.com/yourname/torch-module-monitor/issues"
+Documentation = "https://torch-module-monitor.readthedocs.io"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

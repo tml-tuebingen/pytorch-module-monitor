@@ -98,9 +98,13 @@ class StorageManager:
 
 
     def aggregate_step(self, step: int):
-        """Aggregate batch statistics for a step.
-         
-        Uses the aggregation functions provided when logging the tensors, or the default aggregation function provided here.
+        """Aggregate values logged across micro-batches for a step.
+
+        For lists of scalars/tensors, applies aggregation function (default: mean).
+        Custom aggregation functions can return a dict for multiple aggregated values.
+
+        Args:
+            step: The step number to aggregate.
         """
         if step not in self.log_dict:
             return
@@ -169,7 +173,12 @@ class StorageManager:
         return new_dict
         
     def save_hdf5(self, filename: str, condensed: bool = True):
-        """Save the log dict as HDF5."""
+        """Save the log dict as HDF5.
+
+        Args:
+            filename: Path to save the HDF5 file.
+            condensed: If True, saves in condensed format (metrics grouped by name).
+        """
         import h5py
         
         log_dict = self.log_dict
@@ -227,7 +236,14 @@ class StorageManager:
             
     @staticmethod
     def load_hdf5(filename: str) -> dict:
-        """Load log dict from HDF5 file."""
+        """Load log dict from HDF5 file.
+
+        Args:
+            filename: Path to the HDF5 file to load.
+
+        Returns:
+            Dictionary in condensed format (metrics grouped by name).
+        """
         log_dict = {}
         for entry_key in StorageManager.read_hdf5_entry_keys(filename):
             keys, values = StorageManager.read_hdf5_entry(filename, entry_key)

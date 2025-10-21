@@ -10,7 +10,7 @@ import math
 from .monitor import ModuleMonitor
 
 def monitor_scaled_dot_product_attention(
-    monitor: ModuleMonitor, 
+    monitor: ModuleMonitor,
     module: Union[str, torch.nn.Module],
     query: torch.Tensor,
     key: torch.Tensor,
@@ -23,7 +23,26 @@ def monitor_scaled_dot_product_attention(
     activation: torch.Tensor = None,
     is_reference: bool = False
 ) -> None:
-    """Monitor a scaled_dot_product_attention operation.
+    """Monitor query, key, value tensors and attention entropy in an attention operation.
+
+    Must be called manually within attention modules. Logs per-head metrics for:
+    - Query/key/value activations
+    - Output activations (if provided)
+    - Attention entropy
+
+    Args:
+        monitor: The ModuleMonitor instance.
+        module: Module name or module instance for logging.
+        query: Query tensor with shape (..., n_heads, seq_len, head_dim).
+        key: Key tensor with shape (..., n_heads, seq_len, head_dim).
+        value: Value tensor with shape (..., n_heads, seq_len, head_dim).
+        attn_mask: Optional attention mask.
+        dropout_p: Dropout probability for attention weights.
+        is_causal: Whether to use causal masking.
+        scale: Optional scale factor (default: 1/sqrt(head_dim)).
+        enable_gqa: Enable grouped query attention (repeats keys/values).
+        activation: Optional output activation tensor to monitor.
+        is_reference: Whether this is from the reference module.
     """
     if not monitor.is_monitoring():
         return

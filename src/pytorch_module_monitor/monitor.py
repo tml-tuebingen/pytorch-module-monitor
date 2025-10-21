@@ -47,6 +47,18 @@ class MonitorMixin:
 # The ModuleMonitor class
 #################################################################
 def default_format_module_name_fn(name: str):
+    """Default function to format module names for logging.
+
+    Normalizes module names by handling PyTorch compilation wrappers (torch.compile),
+    FSDP wrappers, and other internal PyTorch naming conventions.
+
+    Args:
+        name: The raw module name from named_modules().
+
+    Returns:
+        A formatted module name suitable for logging. Returns "[root module]" for
+        the root module and removes wrapper prefixes for all other modules.
+    """
     if name == "" or name == "_orig_mod" or name == "_forward_module" or name == "_fsdp_wrapped_module":
         return "[root module]"
     for s in ["_forward_module.", "_orig_mod.", "_fsdp_wrapped_module."]:
@@ -247,12 +259,17 @@ class ModuleMonitor:
             raise ValueError("The reference module must have the same structure as the monitored module (there are modules with different names).")
 
 
-    def has_reference_module(self): 
+    def has_reference_module(self):
+        """Check if a reference module has been set.
+
+        Returns:
+            True if a reference module is set, False otherwise.
+        """
         return self.reference_module is not None
 
 
     def remove_reference_module(self):
-        """Remove the reference module."""
+        """Remove the reference module and clean up all associated hooks and state."""
         if not self.has_reference_module():
             return
         # notify the MonitoredModules
@@ -312,8 +329,13 @@ class ModuleMonitor:
 
     @contextmanager
     def no_monitor(self):
-        """
-        Context manager to temporarily disable monitoring. Use this to perform other forward operations whose activations should not be ignored by the monitor.
+        """Context manager to temporarily disable monitoring.
+
+        Use this to perform forward passes that should not be monitored (e.g., validation).
+
+        Example:
+            with monitor.no_monitor():
+                validation_output = model(validation_input)
         """
         self.within_monitoring_window = False
         try:
@@ -323,12 +345,20 @@ class ModuleMonitor:
 
 
     def after_micro_batch(self):
-        """To be called after a mini-batch is done. Cleanup of intermediate state."""
+        """Clean up stored reference activations after processing a micro-batch.
+
+        Call this after each micro-batch when using gradient accumulation, before
+        the next micro-batch forward pass.
+        """
         self.reference_module_activations = {}
 
 
     def end_step(self):
-        """This function is called after all mini-batches of a gradient step are done. It aggregates the batch statistics. """
+        """Finalize the current step and aggregate metrics across all micro-batches.
+
+        Call this after all micro-batches and backward passes for the step are complete,
+        typically before optimizer.step().
+        """
         # we don't require the user to call after_micro_batch if there is only a single micro batch
         self.reference_module_activations = {}
 
@@ -340,12 +370,20 @@ class ModuleMonitor:
 
 
     def get_step_metrics(self):
-        """Return the metrics logged during the current step"""
+        """Return the metrics logged during the current step.
+
+        Returns:
+            Dictionary mapping metric names to their aggregated values for the current step.
+        """
         return self.storage.get_step_metrics(self.current_step)
     
 
     def get_all_metrics(self):
-        """Return the full log dict with all steps that have been logged so far."""
+        """Return all logged metrics across all steps.
+
+        Returns:
+            Dictionary mapping step numbers to their metric dictionaries.
+        """
         return self.storage.get_all_metrics()
 
 
@@ -354,10 +392,13 @@ class ModuleMonitor:
     #################################################################
 
     def log_scalar(self, key: str, value: Union[Number, torch.Tensor], aggregation_fn: Optional[Callable] = None, force=False):
-        """Monitor a scalar value such as the loss or the learning rate.
-        
-        If force is set to True, the value is logged even if we are not monitoring the current step.
-        This is useful to monitor values like the final validation loss.
+        """Log a scalar value (e.g., loss, learning rate).
+
+        Args:
+            key: Name of the metric to log.
+            value: Scalar value or single-element tensor.
+            aggregation_fn: Function to aggregate values across micro-batches.
+            force: If True, log even if current step is not being monitored.
         """
         if not self.is_monitoring() and not force:
             return
@@ -365,12 +406,23 @@ class ModuleMonitor:
         self.storage.log_scalar(self.current_step, key, value, aggregation_fn=aggregation_fn)
 
     def log_scalars(self, monitor_dict: dict, force=False):
-        """Monitor a dictionary of scalar values."""
+        """Log multiple scalar values at once.
+
+        Args:
+            monitor_dict: Dictionary mapping metric names to scalar values.
+            force: If True, log even if current step is not being monitored.
+        """
         for key, value in monitor_dict.items():
             self.storage.log_scalar(self.current_step, key, value, force=force)
 
     def log_tensor(self, key: str, tensor: torch.Tensor, aggregation_fn: Optional[Callable] = None):
-        """Monitor a torch.Tensor."""
+        """Log a tensor value.
+
+        Args:
+            key: Name of the metric to log.
+            tensor: Tensor value to log.
+            aggregation_fn: Function to aggregate tensors across micro-batches.
+        """
         if not self.is_monitoring():
             return
 
@@ -509,6 +561,13 @@ class ModuleMonitor:
     # Gradients
     #################################################################
     def monitor_gradients(self, before_clip=False):
+        """Compute and log gradient metrics for all parameters.
+
+        Call this after loss.backward() but before optimizer.step().
+
+        Args:
+            before_clip: If True, logs metrics as "gradient_before_clip/" instead of "gradient/".
+        """
         if not self.is_monitoring():
             return
         
@@ -576,7 +635,11 @@ class ModuleMonitor:
 
 
     def monitor_parameters(self):
-        """Monitor the parameters of the monitored module."""
+        """Compute and log parameter metrics for all parameters.
+
+        Call this during the training step to monitor parameter values and,
+        if a reference module is set, parameter differences.
+        """
         if not self.is_monitoring():
             return
         
