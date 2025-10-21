@@ -12,7 +12,7 @@ description = "Deep-dive diagnostics for PyTorch model training - monitor activa
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Your Name", email = "you@example.com" },
+    { name = "Sebastian Bordt", email = "sbordt@posteo.de" },
 ]
 requires-python = ">=3.9"
 dependencies = [
@@ -54,9 +54,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/torch-module-monitor"
-Source = "https://github.com/yourname/torch-module-monitor"
-Issues = "https://github.com/yourname/torch-module-monitor/issues"
+Homepage = "https://github.com/tml-tuebingen/torch-module-monitor"
+Source = "https://github.com/tml-tuebingen/torch-module-monitor"
+Issues = "https://github.com/tml-tuebingen/torch-module-monitor/issues"
 Documentation = "https://torch-module-monitor.readthedocs.io"
 
 [tool.setuptools]
