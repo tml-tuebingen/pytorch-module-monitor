@@ -1,5 +1,7 @@
 # Monitor the training of your PyTorch modules
 
+![monitor](images/landing.png)
+
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -85,7 +87,7 @@ Log the collected metrics in a single line of code:
 wandb.log(training_monitor.get_step_metrics(), step=current_step)
 ```
 
-Examples: TODO Provide Links
+![monitor](images/wandb.png)
 
 ---
 
