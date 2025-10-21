@@ -3,45 +3,34 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Research code release for monitoring PyTorch model training dynamics. Accompanies the NeurIPS 2025 paper ["On the Surprising Effectiveness of Large Learning Rates under Standard Width Scaling"](https://arxiv.org/abs/2505.22491) (Haas et al., 2025).
+A simple research code base to monitor the training of small-to-medium neural networks. Log arbitrary metrics of activations, gradients, and parameters to W&B with a few lines of code!
 
-**Designed for:** Researchers monitoring small-to-medium neural networks on single-GPU setups.
-**Not for:** Production deployments or multi-GPU training (see [limitations](#multi-gpu-training) below).
+We also implement the refined coordinate check (RCC) from the NeurIPS 2025 paper ["On the Surprising Effectiveness of Large Learning Rates under Standard Width Scaling"](https://arxiv.org/abs/2505.22491) (Haas et al., 2025).
 
----
+⚡For a complete working example, see how the monitor can be integrated into [nanoGPT](https://github.com/tml-tuebingen/nanoGPT-monitored).⚡
 
-## Features
-
-**1. Arbitrary Metric Computation**
-- Monitor activations, parameters, and gradients with one line of code per metric
-- Regex-based layer filtering for selective monitoring
-- Built-in attention mechanism support (query/key/value, entropy)
-- Micro-batch aggregation and HDF5 export
-
-**2. Refined Coordinate Check (RCC)**
-- Decomposes activation changes: **(W_t - W_0)x_t** (weight updates) vs. **W_0(x_t - x_0)** (input drift)
-- Essential for analyzing hyperparameter scaling in muP/SP settings
-
----
-
-## Installation
+### Installation
 
 ```bash
 pip install torch-module-monitor
 ```
 
-**Optional dependencies:**
-```bash
-pip install torch-module-monitor[wandb]  # Weights & Biases
-pip install torch-module-monitor[tb]     # TensorBoard
-pip install torch-module-monitor[dev]    # Development tools
-```
+---
+
+## Features
+
+**1. Monitor arbitrary metrics of activations, gradients, and parameters with a few lines of code**
+- Add new metrics for activations, gradients, and parameters with a single line of code.
+- Regex-based filtering to determine what should be logged
+- Monitor the internals of the attention operation (query/key/value tensor metrics, attention entropy)
+- Aggregation of activation metrics across micro-batches
+
+**2. Perform the Refined Coordinate Check (RCC) from https://arxiv.org/abs/2505.22491**
+- We provide an implementation of the refined coordinate check.
 
 ---
 
-## Quick Start
-
-### Basic Monitoring
+## Basic Monitoring
 
 ```python
 from torch_module_monitor import ModuleMonitor
@@ -74,55 +63,48 @@ for step, (inputs, targets) in enumerate(dataloader):
         wandb.log(monitor.get_step_metrics())
 ```
 
-### Refined Coordinate Check
-
-```python
-import copy
-from torch_module_monitor import ModuleMonitor, RefinedCoordinateCheck
-
-# Save model at initialization
-model_init = copy.deepcopy(model)
-
-monitor = ModuleMonitor(monitor_step_fn=lambda step: step % 100 == 0)
-monitor.set_module(model)
-monitor.set_reference_module(model_init)
-
-rcc = RefinedCoordinateCheck(monitor)
-
-# Training loop
-for step, (inputs, targets) in enumerate(dataloader):
-    monitor.begin_step(step)
-
-    with monitor.no_monitor():
-        _ = model_init(inputs)  # Store reference activations
-    outputs = model(inputs)
-
-    rcc.refined_coordinate_check()  # Compute (W_t-W_0)x_t and W_0(x_t-x_0)
-
-    # ... backward, step, end_step as above
-```
+## Complete Examples
 
 **See [examples/](examples/) for complete examples:**
 - `metrics.ipynb` - Basic metric monitoring
 - `reference-model.ipynb` - Reference module comparison
-- `refined-coordinate-check.ipynb` - Full RCC workflow
+- `refined-coordinate-check.ipynb` - Refined coordinate check
 
-**Real-world integration:** See our [monitored nanoGPT](https://github.com/tml-tuebingen/nanoGPT-monitored) for a complete transformer training example.
+⚡We also show how to integrate the monitor into [nanoGPT](https://github.com/tml-tuebingen/nanoGPT-monitored).⚡
+
 
 ---
 
-## Key Patterns
+## Integration with Weights & Biases
 
-### Regex-Based Layer Filtering
+We name the different metrics such that they are nicely visualized in Weights & Biases.
+
+Log the collected metrics in a single line of code:
+
+```python
+wandb.log(training_monitor.get_step_metrics(), step=current_step)
+```
+
+Examples: TODO Provide Links
+
+---
+
+## Patterns
+
+### Regex-Based Module Filtering
+
+You can use a regex to specify that a metric should only be computed for specific tensors.
 
 ```python
 # Monitor only attention layers
 monitor.add_activation_metric(
-    "entropy", lambda x: compute_entropy(x), metric_regex=r".*attn.*"
+    "my_metric", my_metric(x), metric_regex=r".*mlp.*"
 )
 ```
 
 ### Reference Module Comparison
+
+In infinite width theory, we often want to measure the difference of activations and parameters to the model at initialization. We implement this via an arbitrary reference model to which our model can be compared.
 
 ```python
 reference_model = copy.deepcopy(model)
@@ -134,9 +116,9 @@ monitor.add_parameter_difference_metric(
 )
 ```
 
-### Complex Modules (MonitorMixin)
+## Complex Modules
 
-By default, only modules returning a single tensor are monitored. For complex outputs (e.g., attention), use `MonitorMixin`:
+By default, we monitor the activations of modules that return a single tensor. To monitor statistics of complex modules, these modules can implement `MonitorMixin`. We use this approach to monitor the internals of the attention operation. 
 
 ```python
 from torch_module_monitor import MonitorMixin, monitor_scaled_dot_product_attention
@@ -172,28 +154,9 @@ class CustomLayer(nn.Module, MonitorMixin):
         return output
 ```
 
-### Export to HDF5
+## Multi-GPU Support
 
-```python
-monitor.storage.save_hdf5("metrics.h5")
-
-# Load for analysis
-from torch_module_monitor import StorageManager
-metrics = StorageManager.load_hdf5("metrics.h5")  # {metric_name: {step: value}}
-```
-
----
-
-## Multi-GPU Training
-
-**Current support:** Single-GPU only. The code was developed and tested for single-GPU training.
-
-**Limitations:**
-- **Activation tracking:** Each GPU needs its own monitor; activations not gathered automatically
-- **Parameters/gradients:** Would require gathering on rank 0 for centralized logging
-- **Refined Coordinate Check:** Not straightforward to extend to multi-GPU due to synchronization requirements
-
-**Recommendation:** Use single-GPU for RCC analysis (possibly on a smaller proxy model), or contribute multi-GPU support!
+In principle, the monitor can support multi-GPU training, though we do not provide direct support for any parallelization strategy. With FSDP, for example, every GPU could have its own monitor. However, we do not currently implement the synchronization of activation metrics across GPUs. The refined coordinate check was only tested for single-GPU training. 
 
 ---
 
@@ -202,24 +165,16 @@ metrics = StorageManager.load_hdf5("metrics.h5")  # {metric_name: {step: value}}
 If you use this code, please cite:
 
 ```bibtex
-@article{haas2025splargelr,
+@inproceedings{haas2025splargelr,
   title={On the Surprising Effectiveness of Large Learning Rates under Standard Width Scaling},
   author={Haas, Moritz and Bordt, Sebastian and von Luxburg, Ulrike and Vankadara, Leena Chennuru},
-  journal={arXiv preprint arXiv:2505.22491},
+  booktitle={Neurips},
   year={2025}
 }
 ```
 
----
-
 ## Contributing
 
-Contributions welcome! This is research code, but we appreciate bug reports, multi-GPU support, new monitoring patterns, and documentation improvements.
+We provide this code as-is. We may accept pull requests that fix bugs or add new features. 
 
-## License
 
-MIT License - see [LICENSE](LICENSE).
-
-## Acknowledgments
-
-Developed at the [Tübingen Machine Learning Lab](https://tml.cs.uni-tuebingen.de/).
