@@ -42,7 +42,7 @@ from torch_module_monitor import ModuleMonitor
 monitor = ModuleMonitor(monitor_step_fn=lambda step: step % 10 == 0)
 monitor.set_module(model)
 
-monitor.add_activation_metric("mean", lambda x: x.mean())
+monitor.add_activation_metric("mean", lambda x: x.mean(dim=-1))
 monitor.add_parameter_metric("norm", lambda x: x.norm())
 monitor.add_gradient_metric("norm", lambda x: x.norm())
 
