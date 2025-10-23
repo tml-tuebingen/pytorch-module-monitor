@@ -359,10 +359,10 @@ Call `monitor.monitor_parameters()` to compute these metrics. They are logged as
 
 The Refined Coordinate Check (RCC) from [Haas et al., 2025](https://arxiv.org/abs/2505.22491) is an advanced diagnostic that builds on **Reference Module Comparison** (see above). While activation difference metrics compute simple differences like `||act - ref_act||`, RCC decomposes these changes into two components:
 
-- **(W_t - W_0) x_t**: Change due to weight updates (learning)
-- **W_0 (x_t - x_0)**: Change due to input changes (drift)
+- **(W_t - W_0) x_t**: Effective Updates
+- **W_0 (x_t - x_0)**: Propagating Updates
 
-This helps diagnose whether model changes are driven by weight learning or input drift across layers.
+See also equation (RCC) in [Haas et al., 2025](https://arxiv.org/abs/2505.22491).
 
 **Setup:**
 
@@ -412,14 +412,14 @@ for step, (inputs, targets) in enumerate(dataloader):
 
 1. **Reference forward pass**: Stores W_0 x_0 (reference activations) and x_0 (reference inputs)
 2. **Monitored forward pass**: Stores W_t x_t (current activations) and x_t (current inputs)
-3. **RCC computation**: Performs **additional forward passes** with the reference module using current inputs to compute W_0(x_t)
+3. **RCC computation**: Performs **additional forward passes** with the reference module using the stored intermediate activations from the main module.
 4. **Decomposition**: Computes both components:
    - `(W_t - W_0) x_t = W_t x_t - W_0 x_t`
    - `W_0 (x_t - x_0) = W_0 x_t - W_0 x_0`
 
 **Important Notes:**
 
-1. **Builds on Reference Module**: RCC requires the same setup as reference module comparison. The reference forward pass stores the activations that RCC uses.
+1. **Builds on Reference Module**: RCC requires the same setup as the reference module comparison. The reference forward pass stores the activations that RCC uses.
 
 2. **Additional Forward Passes**: The `refined_coordinate_check()` method performs **extra forward passes** internally to compute W_0(x_t). These are done with `torch.no_grad()`, but be aware of the computational cost (~2x forward passes per step).
 
