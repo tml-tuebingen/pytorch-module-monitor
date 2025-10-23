@@ -96,14 +96,158 @@ wandb.log(training_monitor.get_step_metrics(), step=current_step)
 
 ## Patterns
 
+### Monitor Activations
+
+Add metrics to monitor module activations during the forward pass:
+
+```python
+monitor.add_activation_metric(
+    metric_name: str,
+    metric_fn: Callable[[torch.Tensor], torch.Tensor | scalar],
+    metric_regex: str = ".*",
+    metric_aggregation_fn: Optional[Callable] = None
+)
+```
+
+**Metric Function Signature:**
+- **Input**: Activation tensor from a module's forward pass
+- **Output**: Can be either a tensor or scalar
+  - Tensors are flattened and aggregated across the batch/sequence dimensions
+  - Scalars are logged directly
+
+**Example - Basic metrics:**
+```python
+# Compute L2 norm across last dimension
+monitor.add_activation_metric("l2norm", lambda x: x.norm(dim=-1))
+
+# Compute mean activation
+monitor.add_activation_metric("mean", lambda x: x.mean(dim=-1))
+```
+
+**Aggregation Across Micro-Batches:**
+
+When training with gradient accumulation, activation metrics are logged for each micro-batch and then aggregated at `end_step()`. By default, aggregation uses the mean.
+
+You can specify custom aggregation functions:
+
+```python
+# Track minimum activation across micro-batches
+monitor.add_activation_metric(
+    "min",
+    lambda x: torch.min(x, dim=-1).values,
+    metric_regex="conv1",
+    metric_aggregation_fn=torch.min  # Custom aggregation
+)
+
+# Track maximum activation across micro-batches
+monitor.add_activation_metric(
+    "max",
+    lambda x: torch.max(x, dim=-1).values,
+    metric_regex="conv2",
+    metric_aggregation_fn=torch.max  # Custom aggregation
+)
+```
+
+The aggregation function receives a concatenated tensor of all values from micro-batches and should return a scalar. Common patterns:
+- `torch.min` - minimum across micro-batches
+- `torch.max` - maximum across micro-batches
+- `torch.mean` - mean across micro-batches (default)
+- `lambda x: torch.quantile(x, 0.95)` - 95th percentile
+
+### Monitor Parameters
+
+Add metrics to monitor model parameters:
+
+```python
+monitor.add_parameter_metric(
+    metric_name: str,
+    metric_fn: Callable[[torch.Tensor], scalar],
+    metric_regex: str = ".*"
+)
+```
+
+**Metric Function Signature:**
+- **Input**: Parameter tensor (e.g., weights, biases)
+- **Output**: Scalar value
+
+**Example:**
+```python
+# L2 norm of parameters
+monitor.add_parameter_metric("l2norm", lambda p: p.norm())
+
+# Maximum absolute value
+monitor.add_parameter_metric("max", lambda p: p.abs().max())
+
+# Operator norm for fully connected layer weights
+monitor.add_parameter_metric(
+    "opnorm",
+    lambda p: torch.linalg.matrix_norm(p, ord=2),
+    metric_regex=r"fc\d*\.weight"
+)
+```
+
+Call `monitor.monitor_parameters()` in your training loop to compute these metrics.
+
+### Monitor Gradients
+
+Add metrics to monitor parameter gradients:
+
+```python
+monitor.add_gradient_metric(
+    metric_name: str,
+    metric_fn: Callable[[torch.Tensor], scalar],
+    metric_regex: str = ".*"
+)
+```
+
+**Metric Function Signature:**
+- **Input**: Gradient tensor
+- **Output**: Scalar value
+
+**Example:**
+```python
+# L2 norm of gradients
+monitor.add_gradient_metric("l2norm", lambda g: g.norm())
+
+# Maximum absolute gradient
+monitor.add_gradient_metric("max", lambda g: g.abs().max())
+```
+
+Call `monitor.monitor_gradients()` after `loss.backward()` in your training loop.
+
+**Gradient Clipping:**
+
+If you use gradient clipping, you can monitor gradients both before and after clipping:
+
+```python
+# In your training loop
+loss.backward()
+
+# Monitor gradients before clipping
+monitor.monitor_gradients(before_clip=True)
+
+# Clip gradients
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+# Monitor gradients after clipping
+monitor.monitor_gradients(before_clip=False)
+```
+
+When `before_clip=True`, metrics are logged as `gradient_before_clip/{param}/{metric}` instead of `gradient/{param}/{metric}`.
+
 ### Regex-Based Module Filtering
 
 You can use a regex to specify that a metric should only be computed for specific tensors.
 
 ```python
-# Monitor only attention layers
+# Monitor only MLP layers
 monitor.add_activation_metric(
-    "my_metric", my_metric(x), metric_regex=r".*mlp.*"
+    "my_metric", lambda x: x.mean(), metric_regex=r".*mlp.*"
+)
+
+# Monitor only convolutional layers
+monitor.add_parameter_metric(
+    "weight_norm", lambda p: p.norm(), metric_regex=r"conv\d+\.weight"
 )
 ```
 
