@@ -475,12 +475,6 @@ In principle, the monitor can support multi-GPU training, though we do not provi
 
 ---
 
-## Notes on LLM Usage
-
-We used Claude Code to help us perform boilerplate tasks, write function docstrings, and create this README file. 
-
----
-
 ## Citation
 
 If you use this code, please cite:
