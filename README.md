@@ -33,7 +33,7 @@ pip install torch-module-monitor
 
 ---
 
-## Basic Monitoring
+## Basic Usage
 
 ```python
 from torch_module_monitor import ModuleMonitor
@@ -110,14 +110,12 @@ monitor.add_activation_metric(
 ```
 
 **Metric Function Signature:**
-- **Input**: Activation tensor from a module's forward pass
-- **Output**: Can be either a tensor or scalar
-  - Tensors are flattened and aggregated across the batch/sequence dimensions
-  - Scalars are logged directly
+- **Input**: Activation tensor from a module's forward pass, received by a forward hook on the module.
+- **Output**: Can be either a tensor or a scalar. Tensors are flattened and aggregated across the batch/sequence dimensions.
 
 **Example - Basic metrics:**
 ```python
-# Compute L2 norm across last dimension
+# Compute L2 norm across the last dimension
 monitor.add_activation_metric("l2norm", lambda x: x.norm(dim=-1))
 
 # Compute mean activation
@@ -131,7 +129,7 @@ When training with gradient accumulation, activation metrics are logged for each
 You can specify custom aggregation functions:
 
 ```python
-# Track minimum activation across micro-batches
+# Track minimum activation across micro-batches for conv1 modules
 monitor.add_activation_metric(
     "min",
     lambda x: torch.min(x, dim=-1).values,
@@ -139,7 +137,7 @@ monitor.add_activation_metric(
     metric_aggregation_fn=torch.min  # Custom aggregation
 )
 
-# Track maximum activation across micro-batches
+# Track maximum activation across micro-batches for conv2 modules
 monitor.add_activation_metric(
     "max",
     lambda x: torch.max(x, dim=-1).values,
@@ -148,11 +146,7 @@ monitor.add_activation_metric(
 )
 ```
 
-The aggregation function receives a concatenated tensor of all values from micro-batches and should return a scalar. Common patterns:
-- `torch.min` - minimum across micro-batches
-- `torch.max` - maximum across micro-batches
-- `torch.mean` - mean across micro-batches (default)
-- `lambda x: torch.quantile(x, 0.95)` - 95th percentile
+The aggregation function receives a concatenated tensor of all values from micro-batches and should return a scalar.
 
 ### Monitor Parameters
 
@@ -167,7 +161,7 @@ monitor.add_parameter_metric(
 ```
 
 **Metric Function Signature:**
-- **Input**: Parameter tensor (e.g., weights, biases)
+- **Input**: Parameter tensor
 - **Output**: Scalar value
 
 **Example:**
@@ -178,7 +172,7 @@ monitor.add_parameter_metric("l2norm", lambda p: p.norm())
 # Maximum absolute value
 monitor.add_parameter_metric("max", lambda p: p.abs().max())
 
-# Operator norm for fully connected layer weights
+# Operator norm for fully connected layers
 monitor.add_parameter_metric(
     "opnorm",
     lambda p: torch.linalg.matrix_norm(p, ord=2),
@@ -186,7 +180,7 @@ monitor.add_parameter_metric(
 )
 ```
 
-Call `monitor.monitor_parameters()` in your training loop to compute these metrics.
+The metrics are computed when you call `monitor.monitor_parameters()` in your training loop.
 
 ### Monitor Gradients
 
@@ -213,11 +207,11 @@ monitor.add_gradient_metric("l2norm", lambda g: g.norm())
 monitor.add_gradient_metric("max", lambda g: g.abs().max())
 ```
 
-Call `monitor.monitor_gradients()` after `loss.backward()` in your training loop.
+The metrics are computed when you call `monitor.monitor_gradients()` in your training loop.
 
 **Gradient Clipping:**
 
-If you use gradient clipping, you can monitor gradients both before and after clipping:
+We provide a simple utility to monitor gradients both before and after clipping:
 
 ```python
 # In your training loop
